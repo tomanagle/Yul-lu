@@ -13,9 +13,11 @@ import {
   DeleteMemory,
   Dream,
   GetConfig,
+  GetDreamStats,
   GetMemoryEventsByDay,
   GetMemoryGraph,
   GetMemoryStats,
+  GetProjectOverrides,
   GetSessionStats,
   GetUsageByDay,
   GetUsageSummary,
@@ -23,6 +25,7 @@ import {
   ListProjects,
   Retry,
   SaveConfig,
+  SaveProjectOverrides,
   SearchMemories,
   Status,
   UpdateMemory,
@@ -31,24 +34,26 @@ import type {
   ConfigView,
   DreamResult,
   Memory,
+  ProjectOverridePayload,
+  ProjectOverridesView,
   Status as StatusT,
-} from "./types";
+} from "./schemas";
 
 // Centralised query keys so invalidation is grep-able.
 export const qk = {
   status: ["status"] as const,
   config: ["config"] as const,
   projects: ["projects"] as const,
-  memories: (projectID: string, query: string = "") =>
-    ["memories", projectID, query] as const,
+  memories: (projectID: string, query: string = "") => ["memories", projectID, query] as const,
   sessionStats: (projectID: string) => ["session-stats", projectID] as const,
   memoryStats: (projectID: string) => ["memory-stats", projectID] as const,
   memoryEventsByDay: (projectID: string, days: number) =>
     ["memory-events-by-day", projectID, days] as const,
   usageByDay: (days: number) => ["usage-by-day", days] as const,
-  usageSummary: (sinceHours: number) =>
-    ["usage-summary", sinceHours] as const,
+  usageSummary: (sinceHours: number) => ["usage-summary", sinceHours] as const,
   memoryGraph: (projectID: string) => ["memory-graph", projectID] as const,
+  dreamStats: (projectID: string, days: number) => ["dream-stats", projectID, days] as const,
+  projectOverrides: (projectID: string) => ["project-overrides", projectID] as const,
 };
 
 // Polling cadences. Local SQLite queries via Wails are cheap (sub-ms), so we
@@ -89,9 +94,7 @@ export function useMemories(projectID: string, query: string = "") {
   return useQuery({
     queryKey: qk.memories(projectID, trimmed),
     queryFn: () =>
-      trimmed
-        ? SearchMemories(projectID, trimmed, 100)
-        : ListMemories(projectID, 100),
+      trimmed ? SearchMemories(projectID, trimmed, 100) : ListMemories(projectID, 100),
     // Local DB queries are cheap. Poll the unfiltered view often so new
     // memories appear within a couple of seconds. Search results are
     // stable per query, so disable polling there to avoid re-running the
@@ -116,6 +119,16 @@ export function useMemoryStats(projectID: string) {
   return useQuery({
     queryKey: qk.memoryStats(projectID),
     queryFn: () => GetMemoryStats(projectID),
+    staleTime: 0,
+    refetchInterval: POLL_SLOW,
+    refetchIntervalInBackground: false,
+  });
+}
+
+export function useDreamStats(projectID: string, days: number = 30) {
+  return useQuery({
+    queryKey: qk.dreamStats(projectID, days),
+    queryFn: () => GetDreamStats(projectID, days),
     staleTime: 0,
     refetchInterval: POLL_SLOW,
     refetchIntervalInBackground: false,
@@ -163,9 +176,7 @@ export function useMemoryGraph(projectID: string) {
   });
 }
 
-export function useSaveConfig(
-  options?: UseMutationOptions<StatusT, Error, ConfigView>
-) {
+export function useSaveConfig(options?: UseMutationOptions<StatusT, Error, ConfigView>) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (cfg: ConfigView) => SaveConfig(cfg),
@@ -200,6 +211,33 @@ export function useUpdateMemory(projectID: string) {
     mutationFn: ({ id, content, tags }) => UpdateMemory(id, content, tags),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.memories(projectID) });
+    },
+  });
+}
+
+export function useProjectOverrides(projectID: string) {
+  return useQuery({
+    queryKey: qk.projectOverrides(projectID),
+    queryFn: () => GetProjectOverrides(projectID),
+    enabled: !!projectID,
+    staleTime: 30_000,
+  });
+}
+
+export function useSaveProjectOverrides(projectID: string) {
+  const qc = useQueryClient();
+  return useMutation<
+    ProjectOverridesView,
+    Error,
+    { repo: ProjectOverridePayload; user: ProjectOverridePayload }
+  >({
+    mutationFn: ({ repo, user }) => SaveProjectOverrides(projectID, repo, user),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.projectOverrides(projectID) });
+      // Saved overrides affect the resolved config the server uses for
+      // dreaming/reconcile, so the next status / dream / etc. should
+      // refetch too.
+      qc.invalidateQueries({ queryKey: qk.status });
     },
   });
 }

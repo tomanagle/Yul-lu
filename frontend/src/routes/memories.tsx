@@ -2,13 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Check, Pencil, RefreshCw, Search, Trash2, X } from "lucide-react";
 
-import {
-  useDeleteMemory,
-  useMemories,
-  useRetry,
-  useStatus,
-  useUpdateMemory,
-} from "@/lib/queries";
+import { useDeleteMemory, useMemories, useRetry, useStatus, useUpdateMemory } from "@/lib/queries";
 import { useProjectScope } from "@/lib/project-scope";
 import { relativeTime, shortUUID } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
@@ -55,18 +49,14 @@ export function MemoriesPage() {
         </span>
         <span>
           {project ? (
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono">
-              {project}
-            </code>
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono">{project}</code>
           ) : (
             <span className="italic">all projects</span>
           )}
         </span>
       </div>
 
-      {memoriesQuery.isLoading && (
-        <p className="text-sm text-muted-foreground">Loading…</p>
-      )}
+      {memoriesQuery.isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
       {memoriesQuery.error && (
         <Card className="border-destructive/40 bg-destructive/10">
           <CardContent className="p-4 text-sm text-destructive">
@@ -74,9 +64,7 @@ export function MemoriesPage() {
           </CardContent>
         </Card>
       )}
-      {!memoriesQuery.isLoading && showingCount === 0 && !filter && (
-        <EmptyState />
-      )}
+      {!memoriesQuery.isLoading && showingCount === 0 && !filter && <EmptyState />}
       {!memoriesQuery.isLoading && showingCount === 0 && filter && (
         <p className="py-8 text-center text-sm text-muted-foreground">
           No memories match “{filter}”.
@@ -88,12 +76,8 @@ export function MemoriesPage() {
           <li key={m.id}>
             <MemoryCard
               memory={m}
-              isSaving={
-                updateMemory.isPending && updateMemory.variables?.id === m.id
-              }
-              onSave={(content, tags) =>
-                updateMemory.mutateAsync({ id: m.id, content, tags })
-              }
+              isSaving={updateMemory.isPending && updateMemory.variables?.id === m.id}
+              onSave={(content, tags) => updateMemory.mutateAsync({ id: m.id, content, tags })}
               onDelete={() => {
                 if (confirm("Delete this memory?")) deleteMemory.mutate(m.id);
               }}
@@ -180,9 +164,7 @@ function MemoryCard({
     <Card className="group transition-colors hover:border-border/80">
       <CardContent className="space-y-3 p-4">
         <div className="flex items-start gap-3">
-          <p className="flex-1 whitespace-pre-wrap text-sm leading-relaxed">
-            {memory.content}
-          </p>
+          <p className="flex-1 whitespace-pre-wrap text-sm leading-relaxed">{memory.content}</p>
           <div className="flex shrink-0 gap-1 opacity-0 transition-opacity group-hover:opacity-100">
             <Button
               size="icon"
@@ -253,9 +235,7 @@ function MemoryEditor({
   const [tagsInput, setTagsInput] = useState((memory.tags ?? []).join(", "));
   const [error, setError] = useState<string | null>(null);
 
-  const dirty =
-    content !== memory.content ||
-    tagsInput !== (memory.tags ?? []).join(", ");
+  const dirty = content !== memory.content || tagsInput !== (memory.tags ?? []).join(", ");
 
   const handleSave = async () => {
     setError(null);
@@ -296,18 +276,11 @@ function MemoryEditor({
         </div>
 
         {error && (
-          <p className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
-            {error}
-          </p>
+          <p className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">{error}</p>
         )}
 
         <div className="flex justify-end gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onCancel}
-            disabled={isSaving}
-          >
+          <Button variant="ghost" size="sm" onClick={onCancel} disabled={isSaving}>
             <X className="h-3.5 w-3.5" />
             Cancel
           </Button>
@@ -340,23 +313,13 @@ function SetupCard({
           </p>
         )}
         <p className="text-xs text-muted-foreground">
-          Config:{" "}
-          <code className="rounded bg-muted px-1.5 py-0.5">
-            {status.config_path}
-          </code>
+          Config: <code className="rounded bg-muted px-1.5 py-0.5">{status.config_path}</code>
           <br />
-          DB:{" "}
-          <code className="rounded bg-muted px-1.5 py-0.5">
-            {status.db_path}
-          </code>
+          DB: <code className="rounded bg-muted px-1.5 py-0.5">{status.db_path}</code>
         </p>
         <div className="flex gap-2">
           <Button onClick={onOpenSettings}>Open Settings</Button>
-          <Button
-            variant="outline"
-            onClick={() => retry.mutate()}
-            disabled={retry.isPending}
-          >
+          <Button variant="outline" onClick={() => retry.mutate()} disabled={retry.isPending}>
             <RefreshCw className={retry.isPending ? "animate-spin" : ""} />
             {retry.isPending ? "Retrying…" : "Retry"}
           </Button>
@@ -372,8 +335,8 @@ function EmptyState() {
       <CardContent className="p-10 text-center">
         <h3 className="text-base font-semibold">No memories yet</h3>
         <p className="mt-1 text-sm text-muted-foreground">
-          Memories appear here as your MCP client calls <code>store_memory</code>,
-          or as the dreamer extracts them from recorded conversations.
+          Memories appear here as your MCP client calls <code>store_memory</code>, or as the dreamer
+          extracts them from recorded conversations.
         </p>
       </CardContent>
     </Card>

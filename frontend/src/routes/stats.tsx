@@ -2,33 +2,22 @@ import { useEffect, useState } from "react";
 import { RefreshCw, Sparkles } from "lucide-react";
 
 import {
+  useDreamStats,
   useMemoryEventsByDay,
   useMemoryGraph,
   useMemoryStats,
+  useSessionStats,
   useStatus,
   useUsageByDay,
   useUsageSummary,
 } from "@/lib/queries";
 import { useProjectScope } from "@/lib/project-scope";
-import {
-  MemoryEventsChart,
-  UsageByModelChart,
-  UsageCostChart,
-} from "@/components/charts";
-import {
-  MemoryGraphCanvas,
-  useDecoratedGraph,
-} from "@/components/memory-graph";
+import { MemoryEventsChart, UsageByModelChart, UsageCostChart } from "@/components/charts";
+import { MemoryGraphCanvas, useDecoratedGraph } from "@/components/memory-graph";
 import { relativeTime, shortUUID } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
 // Date-range presets. Custom calendar pickers can come later; the four
@@ -74,6 +63,9 @@ export function StatsPage() {
   const usageSummaryQuery = useUsageSummary(days * 24);
   const graphQuery = useMemoryGraph(project);
   const graphDecorated = useDecoratedGraph(graphQuery.data);
+  // Dreaming activity: live buffer + persisted history over the range.
+  const sessionQuery = useSessionStats(project);
+  const dreamStatsQuery = useDreamStats(project, days);
 
   if (!status?.ready) {
     return (
@@ -91,6 +83,8 @@ export function StatsPage() {
     usageDayQuery.refetch();
     usageSummaryQuery.refetch();
     graphQuery.refetch();
+    sessionQuery.refetch();
+    dreamStatsQuery.refetch();
   };
 
   const anyFetching =
@@ -98,27 +92,22 @@ export function StatsPage() {
     eventsQuery.isFetching ||
     usageDayQuery.isFetching ||
     usageSummaryQuery.isFetching ||
-    graphQuery.isFetching;
+    graphQuery.isFetching ||
+    sessionQuery.isFetching ||
+    dreamStatsQuery.isFetching;
 
   return (
     <div className="space-y-6">
       {/* Range picker + refresh. Project picker lives in the sidebar. */}
       <div className="flex items-center justify-between gap-3">
         <RangeSelect value={days} onChange={setDays} />
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={refreshAll}
-          disabled={anyFetching}
-        >
+        <Button variant="outline" size="sm" onClick={refreshAll} disabled={anyFetching}>
           <RefreshCw className={cn("h-4 w-4", anyFetching && "animate-spin")} />
           Refresh
         </Button>
       </div>
 
-      {!stats && (
-        <p className="text-sm text-muted-foreground">Loading…</p>
-      )}
+      {!stats && <p className="text-sm text-muted-foreground">Loading…</p>}
 
       {stats && (
         <>
@@ -154,6 +143,15 @@ export function StatsPage() {
             />
           </div>
 
+          {/* Dreaming activity - live buffer + persisted aggregate over the
+              selected range. If the dreamer is healthy, "messages buffered"
+              stays small (gets drained) and "passes" grows steadily. */}
+          <DreamingCard
+            range={rangeLabel(days)}
+            buffer={sessionQuery.data}
+            stats={dreamStatsQuery.data}
+          />
+
           {/* 2-up charts row */}
           <div className="grid gap-4 lg:grid-cols-2">
             <Card>
@@ -188,13 +186,12 @@ export function StatsPage() {
                 <div>
                   <CardTitle className="text-base">Memory graph</CardTitle>
                   <CardDescription>
-                    Nodes are memories; edges connect by shared tag (faint) or
-                    embedding similarity (violet). Larger node = more recalls.
+                    Nodes are memories; edges connect by shared tag (faint) or embedding similarity
+                    (violet). Larger node = more recalls.
                   </CardDescription>
                 </div>
                 <span className="shrink-0 text-xs text-muted-foreground">
-                  {graphDecorated.nodes.length} memories ·{" "}
-                  {graphDecorated.links.length} edges
+                  {graphDecorated.nodes.length} memories · {graphDecorated.links.length} edges
                 </span>
               </div>
             </CardHeader>
@@ -204,9 +201,7 @@ export function StatsPage() {
                   nodes={graphDecorated.nodes}
                   links={graphDecorated.links}
                   loading={graphQuery.isLoading}
-                  error={
-                    graphQuery.error ? String(graphQuery.error) : null
-                  }
+                  error={graphQuery.error ? String(graphQuery.error) : null}
                 />
               </div>
             </CardContent>
@@ -229,9 +224,7 @@ export function StatsPage() {
             <Card className="lg:col-span-2">
               <CardHeader className="pb-2">
                 <CardTitle className="text-base">By provider/model</CardTitle>
-                <CardDescription>
-                  Calls + cost, last {rangeLabel(days)}.
-                </CardDescription>
+                <CardDescription>Calls + cost, last {rangeLabel(days)}.</CardDescription>
               </CardHeader>
               <CardContent>
                 <UsageByModelChart data={usageSummaryQuery.data ?? []} />
@@ -284,11 +277,7 @@ function KpiTile({
         )}
       </div>
       <div className="yullu-label mt-2 text-muted-foreground">{label}</div>
-      {sub && (
-        <div className="mt-0.5 text-[11px] text-muted-foreground/80">
-          {sub}
-        </div>
-      )}
+      {sub && <div className="mt-0.5 text-[11px] text-muted-foreground/80">{sub}</div>}
     </div>
   );
 }
@@ -296,13 +285,15 @@ function KpiTile({
 function TopRecalled({
   rows,
 }: {
-  rows: { memory: { id: number; uuid: string; content: string; tags?: string[]; updated_at: string }; count: number }[];
+  rows: {
+    memory: { id: number; uuid: string; content: string; tags?: string[]; updated_at: string };
+    count: number;
+  }[];
 }) {
   if (rows.length === 0) {
     return (
       <p className="py-4 text-sm text-muted-foreground">
-        No recalls yet. Memories appear here once retrieve_memories starts
-        surfacing them.
+        No recalls yet. Memories appear here once retrieve_memories starts surfacing them.
       </p>
     );
   }
@@ -317,17 +308,11 @@ function TopRecalled({
             {i + 1}
           </div>
           <div className="min-w-0 flex-1 space-y-1">
-            <p className="line-clamp-2 text-sm leading-relaxed">
-              {row.memory.content}
-            </p>
+            <p className="line-clamp-2 text-sm leading-relaxed">{row.memory.content}</p>
             {(row.memory.tags ?? []).length > 0 && (
               <div className="flex flex-wrap gap-1">
                 {row.memory.tags!.slice(0, 3).map((t) => (
-                  <Badge
-                    key={t}
-                    variant="secondary"
-                    className="px-1.5 py-0 text-[10px]"
-                  >
+                  <Badge key={t} variant="secondary" className="px-1.5 py-0 text-[10px]">
                     {t}
                   </Badge>
                 ))}
@@ -340,9 +325,7 @@ function TopRecalled({
             </div>
           </div>
           <div className="shrink-0 text-right">
-            <div className="yullu-tabular text-lg font-semibold text-violet-soft">
-              {row.count}
-            </div>
+            <div className="yullu-tabular text-lg font-semibold text-violet-soft">{row.count}</div>
             <div className="text-[10px] text-muted-foreground">recalls</div>
           </div>
         </li>
@@ -351,15 +334,106 @@ function TopRecalled({
   );
 }
 
+// DreamingCard surfaces both live state (current buffer) and historical
+// aggregate (passes / ops over the range). Importing the types inline here
+// keeps the component co-located with the page; if it grows much further
+// it can move to components/.
+function DreamingCard({
+  range,
+  buffer,
+  stats,
+}: {
+  range: string;
+  buffer?: { sessions: number; messages: number };
+  stats?: {
+    passes: number;
+    sessions_processed: number;
+    messages_processed: number;
+    ops_created: number;
+    ops_updated: number;
+    ops_deleted: number;
+    errors: number;
+    last_pass_at?: string;
+  };
+}) {
+  const lastPass =
+    stats?.last_pass_at && stats.last_pass_at !== "" ? relativeTime(stats.last_pass_at) : "never";
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex items-baseline justify-between gap-3">
+          <div>
+            <CardTitle className="text-base">Dreaming</CardTitle>
+            <CardDescription>
+              Live buffer of recorded messages + dream-pass activity over the last {range}.
+            </CardDescription>
+          </div>
+          <span className="shrink-0 text-xs text-muted-foreground">last pass: {lastPass}</span>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
+          <Stat label="Buffered sessions" value={buffer?.sessions ?? 0} />
+          <Stat
+            label="Buffered messages"
+            value={buffer?.messages ?? 0}
+            hint={(buffer?.messages ?? 0) === 0 ? "Nothing waiting" : "Waiting to dream"}
+          />
+          <Stat label="Passes" value={stats?.passes ?? 0} accent="indigo" />
+          <Stat label="Sessions processed" value={stats?.sessions_processed ?? 0} />
+          <Stat label="Created" value={stats?.ops_created ?? 0} accent="violet" />
+          <Stat label="Updated" value={stats?.ops_updated ?? 0} />
+          <Stat label="Deleted" value={stats?.ops_deleted ?? 0} />
+        </div>
+        {(stats?.errors ?? 0) > 0 && (
+          <p className="mt-3 text-xs text-destructive">
+            {stats?.errors} error{stats?.errors === 1 ? "" : "s"} during recent passes. Check the
+            dreaming page for details.
+          </p>
+        )}
+        {(buffer?.messages ?? 0) > 0 && (stats?.passes ?? 0) === 0 && (
+          <p className="mt-3 text-xs text-muted-foreground">
+            Messages are buffered but no dream pass has run in this window. Configure a direct
+            reasoner in Settings or hit “Dream now” on the Dreaming page.
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function Stat({
+  label,
+  value,
+  hint,
+  accent,
+}: {
+  label: string;
+  value: number;
+  hint?: string;
+  accent?: "indigo" | "violet";
+}) {
+  return (
+    <div className="rounded-md border border-border/40 bg-card/40 p-3">
+      <div
+        className={cn(
+          "yullu-display text-2xl",
+          accent === "indigo" && "text-indigo-soft",
+          accent === "violet" && "text-violet-soft",
+        )}
+      >
+        {value}
+      </div>
+      <div className="yullu-label mt-1 text-muted-foreground">{label}</div>
+      {hint && <div className="mt-0.5 text-[10px] text-muted-foreground/80">{hint}</div>}
+    </div>
+  );
+}
+
 // Segmented control over RANGES. Tailwind handles the active/hover states;
 // the parent owns the value and persists it (see loadRange / RANGE_KEY).
-function RangeSelect({
-  value,
-  onChange,
-}: {
-  value: number;
-  onChange: (v: number) => void;
-}) {
+function RangeSelect({ value, onChange }: { value: number; onChange: (v: number) => void }) {
   return (
     <div
       role="radiogroup"

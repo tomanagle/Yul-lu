@@ -4,13 +4,7 @@
 // a URL search-param to keep the diff small; if we later want sharable
 // links a search-param adapter can replace this.
 
-import {
-  createContext,
-  useContext,
-  useEffect,
-  useState,
-  type ReactNode,
-} from "react";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 
 import { useProjects } from "./queries";
 

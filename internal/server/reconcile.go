@@ -70,13 +70,18 @@ func (s *Server) Reconcile(ctx context.Context) (*ReconcileResult, error) {
 	}
 	res := &ReconcileResult{ProjectID: projectID}
 
+	// Use per-project resolved sync config so a project that overrides
+	// sync_dir (e.g. .memories instead of .yullu) reconciles from the
+	// right directory. Global config is the fallback for unknown projects.
+	syncCfg := s.resolveProject(projectID).Sync
+
 	gitRoot := scope.GitRoot(cwd)
-	if gitRoot == "" || !s.syncCfg.Enabled {
+	if gitRoot == "" || !syncCfg.Enabled {
 		res.NoEventDir = true
 		return res, nil
 	}
 
-	reader := memlog.NewReader(gitRoot, s.syncCfg.Dir)
+	reader := memlog.NewReader(gitRoot, syncCfg.Dir)
 	entries, parseErrs, err := reader.Read()
 	if err != nil {
 		return nil, fmt.Errorf("read events: %w", err)
@@ -141,7 +146,7 @@ func (s *Server) Reconcile(ctx context.Context) (*ReconcileResult, error) {
 		// inside the create event so teammates with the same model can
 		// reuse it immediately.
 		vectors := map[string][]float32(nil)
-		if s.syncCfg.LogEmbeddings {
+		if s.cfg.Sync.LogEmbeddings {
 			vec, err := s.store.GetVector(ctx, m.ID)
 			if err != nil {
 				s.logger.Warn("read local vector failed", "uuid", m.UUID, "err", err.Error())
@@ -214,7 +219,7 @@ func (s *Server) applyEventToState(entry memlog.Entry, st *memoryState, ourEmbed
 // applies vectors that match the local embedder - but they remain in the
 // event file on disk for teammates.
 func (s *Server) acceptVectors(entry memlog.Entry, incoming map[string][]float32, ourEmbedderID string, ourDim int, base map[string][]float32) map[string][]float32 {
-	if !s.syncCfg.ReuseEmbeddings {
+	if !s.cfg.Sync.ReuseEmbeddings {
 		return base
 	}
 	vec, ok := incoming[ourEmbedderID]
@@ -326,7 +331,7 @@ func (s *Server) applyState(ctx context.Context, projectID, memoryUUID string, s
 // model can skip the embed call. No-op when logging is off or the writer is
 // unavailable.
 func (s *Server) publishOwnVector(memoryUUID string, vec []float32) {
-	if !s.syncCfg.LogEmbeddings || s.writer == nil {
+	if !s.cfg.Sync.LogEmbeddings || s.writer == nil {
 		return
 	}
 	event := memlog.NewVectorEvent(memoryUUID, map[string][]float32{s.embedder.ID(): vec})

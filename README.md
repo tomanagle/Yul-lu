@@ -2,21 +2,14 @@
 
 Persistent, semantically-searchable memory for LLMs - scoped per codebase,
 syncable across a team via a `.yullu/` directory committed to the repo.
-Ships as a single Go binary that serves a web UI, a REST API, and the MCP
-endpoint on `localhost:47823`. Works with any MCP client (Claude Code,
-Codex, Cursor, …).
 
-## Quick start
+> **Distribution status:** Yul'lu is pre-release. The only supported way
+> to install right now is to clone this repo and build from source. No
+> Homebrew tap, npm package, or pre-built binaries yet. The CLI subcommand
+> `yullu install` (described below) wires Yul'lu into your AI assistant
+> *after* you've built the binary - it isn't itself the installer.
 
-```bash
-make start
-```
-
-That single command:
-1. Builds the React frontend (`bun run build`) and embeds it into the binary.
-2. Builds + installs `yullu` to `$GOPATH/bin`.
-3. Launches the server - open <http://localhost:47823> in your browser for
-   the UI, point MCP clients at `http://localhost:47823/mcp`.
+## Install
 
 **Requirements:**
 - **Go 1.25+** and a working **cgo** toolchain (Xcode CLT on macOS).
@@ -24,24 +17,55 @@ That single command:
 - A **Voyage API key** for embeddings - paste it into the Settings page on
   first launch (free tier at <https://voyageai.com>).
 
-Reasoning happens via **MCP sampling** by default - your client (Claude
-Code, Codex) does the LLM call using whatever credentials it has, so
-Pro/Plus subscriptions cover it without a separate API key.
-
-Register `yullu` with Claude Code (once `make start` is running):
-
 ```bash
-claude mcp add yullu --transport http http://localhost:47823/mcp
+git clone https://github.com/tomanagle/Yullu.git
+cd Yullu
+make install        # builds frontend + Go binary, installs `yullu` to $GOPATH/bin
+yullu install       # wires Yul'lu into your AI assistant (skill + MCP + Stop hook)
+yullu               # starts the server at http://localhost:47823
 ```
 
-Other handy commands:
+`make install` does two things in one step: builds the React frontend
+(`bun run build`) and embeds it into the Go binary, then compiles and
+copies that binary to `$GOPATH/bin/yullu`.
+
+Once it's on your `PATH`, `yullu install` handles the rest of the setup
+per-assistant (see below).
+
+## Setting up your AI assistant
+
+After `make install`, run:
 
 ```bash
-make dev      # vite on :5173 + air-rebuilt Go server on :47823 (HMR)
-make smoke    # round-trips initialize + tools/list over stdio
-make test     # runs the Go test suite
-make install  # install the standalone stdio CLI (no UI) for clients that prefer stdio
-make serve    # standalone CLI in HTTP-only mode, live-reloaded by air
+yullu install              # auto-detects Claude Code + Codex CLI, wires both
+yullu install cursor       # opt-in; ~/.cursor is shared with the VS Code IDE so it's explicit
+yullu install --service    # also install a launchd/systemd auto-start unit
+yullu install --yes        # answer yes to any prompts (good for scripted setups)
+```
+
+What this writes:
+
+| Assistant | What `yullu install` does |
+|---|---|
+| **Claude Code** | Writes `~/.claude/skills/yullu/SKILL.md`, runs `claude mcp add yullu`, adds a **Stop hook** to `~/.claude/settings.json` so `record_messages` fires deterministically after every turn. |
+| **Codex CLI** | Writes a yullu section to `~/.codex/AGENTS.md`, adds `[mcp_servers.yullu]` to `~/.codex/config.toml`. (No hook support in Codex - recording depends on the model honouring the rules.) |
+| **Cursor** | Adds `mcpServers.yullu` to `~/.cursor/mcp.json` (preserves other servers). Cursor rules are per-project; the install prints a snippet for you to commit to `.cursor/rules/yullu.mdc`. |
+
+Reasoning happens via **MCP sampling** by default - your client (Claude
+Code, Codex) does the LLM call using its own credentials, so Pro/Plus
+subscriptions cover dreaming without a separate API key.
+
+`yullu uninstall` reverses everything (Stop hook removed, MCP entries
+deregistered, service unit unloaded).
+
+## Day-to-day
+
+```bash
+yullu               # run the server (or use the service unit installed above)
+make dev            # HMR dev loop: vite on :47824 + air-rebuilt Go server on :47823
+make smoke          # round-trips initialize + tools/list over stdio
+make test           # runs the Go test suite
+make serve          # standalone stdio CLI in HTTP-only mode under air (legacy)
 ```
 
 ## What it does
@@ -361,25 +385,25 @@ you do in the browser is visible to the LLM and vice versa.
   similarity-and-tag graph.
 
 ```bash
-# One-time:
-brew install oven-sh/bun/bun                  # Bun runtime
+# One-time prerequisite:
+brew install oven-sh/bun/bun                  # Bun runtime (build tool)
 
-# Build + run the desktop server:
-make start
-# Open http://localhost:47823
+# Build + install the binary (see the Install section above for the full flow):
+make install
+yullu                                          # http://localhost:47823
 
-# HMR dev loop (vite on :5173 proxies /api and /mcp to :47823):
+# HMR dev loop (vite on :47824 proxies /api and /mcp to :47823):
 make dev
-# Open http://localhost:5173
+# Open http://localhost:47824 (NOT :47823 - that serves the embedded prod build)
 ```
 
-On first run `make start` will `bun install` in `cmd/app/frontend/`
-(downloads node_modules - ~250MB), build the frontend, and compile the Go
-binary with the dist embedded.
+On first run `make install` will `bun install` in `frontend/` (downloads
+node_modules - ~250MB), build the frontend, and compile the Go binary
+with the dist embedded.
 
 To add another shadcn component (e.g. `Tabs`, `Dialog`):
 ```bash
-cd cmd/app/frontend
+cd frontend
 bunx shadcn@latest add tabs dialog
 ```
 
@@ -389,6 +413,7 @@ bunx shadcn@latest add tabs dialog
 make dev      # vite + air, hot reload on both sides
 make test     # unit + integration tests (incl. two-machine reconcile sim)
 make smoke    # quick MCP wire-format round-trip
+make vet      # go vet (CI runs this too)
 ```
 
 The Go test suite covers store CRUD, the memlog writer/reader, the full
@@ -397,6 +422,34 @@ reconcile pipeline using a fake embedder that simulates two developers
 publish path), and the dream pipeline with a fake reasoner (parser,
 round-trip create/update, reasoner-error paths that keep messages for
 retry).
+
+### Contributing
+
+Pre-commit hooks auto-fix formatting and lint issues so you don't have to
+remember to run them. One-time setup after cloning:
+
+```bash
+brew install lefthook       # or: go install github.com/evilmartians/lefthook
+lefthook install            # wires git hooks for this repo
+```
+
+After that, every commit runs:
+- `oxlint --fix` on staged frontend `.ts`/`.tsx`
+- `oxfmt` on staged frontend `.ts`/`.tsx`/`.css`/`.html`/`.json`
+- `make fmt` (gofmt across the repo) when any `.go` file is staged
+
+Files the hooks touched are re-staged automatically, so the commit you
+wrote is the commit that lands.
+
+**CI** (`.github/workflows/ci.yml`) runs the same checks in non-fixing
+mode on every PR to `main`:
+
+- `bun run lint` (oxlint)
+- `bun run fmt:check` (oxfmt)
+- `make vet`
+
+CI fails the PR if anything's out of compliance — that catches the case
+where someone skipped the lefthook install or pushed with `--no-verify`.
 
 ## Troubleshooting
 
@@ -413,7 +466,7 @@ retry).
 
 ## Name
 
-*Yul'lu* is a Butchella (Badtjala) word for bottlenose dolphins. The Butchella
+*Yul'lu* is a Butchella (Badtjala) word for dolphin. The Butchella
 people are the traditional owners of K'gari (Fraser Island) in southeast
 Queensland, Australia. Dolphins remember pod-mate signature whistles for
 decades - a fitting metaphor for a tool that gives AI assistants persistent

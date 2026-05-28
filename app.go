@@ -114,7 +114,7 @@ func (a *App) openStore() {
 	)
 
 	reasoner, _ := ai.BuildReasoner(a.cfg, ai.NopRecorder())
-	a.srv = server.New(st, embedder, reasoner, a.cfg.Sync, a.cfg.Dreaming, a.logger)
+	a.srv = server.New(st, embedder, reasoner, a.cfg, a.logger)
 	a.swapMCPHandler()
 
 	if a.cfg.Sync.Enabled && a.cfg.Sync.AutoReconcileOnStartup {
@@ -333,6 +333,15 @@ func (a *App) MemoryEventsByDay(ctx context.Context, projectID string, days int)
 	return a.store.MemoryEventsByDay(ctx, projectID, days)
 }
 
+// ---------- DreamStatsReader ----------
+
+func (a *App) DreamStats(ctx context.Context, projectID string, days int) (store.DreamStats, error) {
+	if a.store == nil {
+		return store.DreamStats{}, fmt.Errorf("store not open")
+	}
+	return a.store.DreamStats(ctx, projectID, days)
+}
+
 // ---------- UsageReader ----------
 
 func (a *App) UsageByDay(ctx context.Context, days int) ([]store.DailyUsage, error) {
@@ -385,4 +394,215 @@ func (a *App) Dream(ctx context.Context, opts server.DreamOptions) (*server.Drea
 		return nil, fmt.Errorf("desktop not initialised - finish setup first")
 	}
 	return a.srv.Dream(ctx, opts)
+}
+
+// ---------- MessageRecorder ----------
+
+// RecordMessages funnels into the server's session-buffer write path
+// (same code the record_messages MCP tool uses), so REST-side hooks
+// (e.g. `yullu record-turn` invoked by Claude Code's Stop hook) feed
+// the dreamer just like MCP clients do.
+func (a *App) RecordMessages(
+	ctx context.Context,
+	projectOverride, sessionID string,
+	msgs []handlers.RecordedMessage,
+) (string, error) {
+	if a.srv == nil {
+		return "", fmt.Errorf("desktop not initialised - finish setup first")
+	}
+	inputs := make([]store.SessionMessageInput, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role == "" || m.Content == "" {
+			continue // skip empties; the hook trims aggressively too
+		}
+		inputs = append(inputs, store.SessionMessageInput{
+			Role:    m.Role,
+			Content: m.Content,
+		})
+	}
+	if len(inputs) == 0 {
+		// resolve project so the caller still gets a sensible echo.
+		return projectOverride, nil
+	}
+	return a.srv.RecordSessionMessages(ctx, projectOverride, sessionID, inputs)
+}
+
+// ---------- ProjectOverridesService ----------
+
+// GetProjectOverrides reads the repo + user override files for projectID,
+// stacks them onto the global config to compute the effective view, and
+// returns all three so the UI can render inherited values as placeholders.
+func (a *App) GetProjectOverrides(_ context.Context, projectID string) (handlers.ProjectOverridesView, error) {
+	repoOverride, repoWarn := readOverride(config.RepoOverridePath(a.gitRoot()), false)
+	userOverride, userWarn := readOverride(config.UserOverridePath(projectID), true)
+
+	effective := config.Merge(a.cfg, repoOverride)
+	effective = config.Merge(effective, userOverride)
+
+	view := handlers.ProjectOverridesView{
+		ProjectID: projectID,
+		Repo:      configOverrideToPayload(repoOverride),
+		User:      configOverrideToPayload(userOverride),
+		Effective: effectiveFromConfig(effective),
+	}
+	view.Warnings = append(view.Warnings, repoWarn...)
+	view.Warnings = append(view.Warnings, userWarn...)
+	return view, nil
+}
+
+// SaveProjectOverrides writes both layers and returns the refreshed view.
+// API keys are stripped from the repo payload before writing - committed
+// files must not carry secrets. The Server's config cache for this project
+// is invalidated so the next operation picks up the change.
+func (a *App) SaveProjectOverrides(_ context.Context, projectID string, repo, user handlers.ProjectOverridePayload) (handlers.ProjectOverridesView, error) {
+	// Repo payload: drop API keys before persistence.
+	repo.VoyageAPIKey = nil
+	repo.OpenAIAPIKey = nil
+	repo.AnthropicAPIKey = nil
+
+	repoOverride := payloadToConfigOverride(repo)
+	userOverride := payloadToConfigOverride(user)
+
+	if path := config.RepoOverridePath(a.gitRoot()); path != "" {
+		if err := config.WriteOverride(path, repoOverride); err != nil {
+			return handlers.ProjectOverridesView{}, fmt.Errorf("write repo override: %w", err)
+		}
+	}
+	if path := config.UserOverridePath(projectID); path != "" {
+		if err := config.WriteOverride(path, userOverride); err != nil {
+			return handlers.ProjectOverridesView{}, fmt.Errorf("write user override: %w", err)
+		}
+	}
+	if a.srv != nil {
+		a.srv.InvalidateProjectConfig(projectID)
+	}
+	return a.GetProjectOverrides(context.Background(), projectID)
+}
+
+// gitRoot returns the working tree the desktop server was launched from.
+// This is currently a single-CWD limitation - all repo-layer overrides
+// live under this one git root, regardless of which project the UI is
+// inspecting. A future per-project clone-aware design can lift this.
+func (a *App) gitRoot() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	return scope.GitRoot(cwd)
+}
+
+// readOverride is a small wrapper that swallows the not-exist error - a
+// missing override file is the normal case for projects that haven't been
+// customised. Real read errors (permissions, malformed TOML) propagate via
+// the warnings slice rather than blowing up the GET response.
+func readOverride(path string, allowSecrets bool) (config.ConfigOverride, []string) {
+	if path == "" {
+		return config.ConfigOverride{}, nil
+	}
+	override, warnings, err := config.LoadOverride(path, allowSecrets)
+	if err != nil {
+		return config.ConfigOverride{}, append(warnings, err.Error())
+	}
+	return override, warnings
+}
+
+// configOverrideToPayload flattens the nested config.ConfigOverride into
+// the flat JSON-friendly handlers.ProjectOverridePayload the UI consumes.
+func configOverrideToPayload(o config.ConfigOverride) handlers.ProjectOverridePayload {
+	var p handlers.ProjectOverridePayload
+	if o.Reasoning != nil {
+		p.ReasoningProvider = o.Reasoning.Provider
+		p.ReasoningModel = o.Reasoning.Model
+	}
+	if o.Voyage != nil {
+		p.VoyageAPIKey = o.Voyage.APIKey
+	}
+	if o.OpenAI != nil {
+		p.OpenAIAPIKey = o.OpenAI.APIKey
+	}
+	if o.Anthropic != nil {
+		p.AnthropicAPIKey = o.Anthropic.APIKey
+	}
+	if o.Sync != nil {
+		p.SyncEnabled = o.Sync.Enabled
+		p.SyncDir = o.Sync.Dir
+		p.SyncLogEmbeddings = o.Sync.LogEmbeddings
+		p.SyncReuseEmbeddings = o.Sync.ReuseEmbeddings
+		p.SyncAutoReconcileOnStartup = o.Sync.AutoReconcileOnStartup
+	}
+	if o.Dreaming != nil {
+		p.DreamingEnabled = o.Dreaming.Enabled
+		p.DreamingInterval = o.Dreaming.Interval
+		p.DreamingMinMessages = o.Dreaming.MinMessages
+		p.DreamingContextMemories = o.Dreaming.ContextMemories
+		p.DreamingOnIdleSeconds = o.Dreaming.OnIdleSeconds
+	}
+	return p
+}
+
+// payloadToConfigOverride is the reverse - lifts the flat JSON payload
+// back into the nested config.ConfigOverride structure for persistence.
+// Only non-nil fields produce a non-nil sub-section, so the TOML output
+// stays minimal.
+func payloadToConfigOverride(p handlers.ProjectOverridePayload) config.ConfigOverride {
+	var o config.ConfigOverride
+	if p.ReasoningProvider != nil || p.ReasoningModel != nil {
+		o.Reasoning = &config.ProviderOverride{
+			Provider: p.ReasoningProvider,
+			Model:    p.ReasoningModel,
+		}
+	}
+	if p.VoyageAPIKey != nil {
+		o.Voyage = &config.KeyOverride{APIKey: p.VoyageAPIKey}
+	}
+	if p.OpenAIAPIKey != nil {
+		o.OpenAI = &config.KeyOverride{APIKey: p.OpenAIAPIKey}
+	}
+	if p.AnthropicAPIKey != nil {
+		o.Anthropic = &config.KeyOverride{APIKey: p.AnthropicAPIKey}
+	}
+	if p.SyncEnabled != nil || p.SyncDir != nil || p.SyncLogEmbeddings != nil ||
+		p.SyncReuseEmbeddings != nil || p.SyncAutoReconcileOnStartup != nil {
+		o.Sync = &config.SyncOverride{
+			Enabled:                p.SyncEnabled,
+			Dir:                    p.SyncDir,
+			LogEmbeddings:          p.SyncLogEmbeddings,
+			ReuseEmbeddings:        p.SyncReuseEmbeddings,
+			AutoReconcileOnStartup: p.SyncAutoReconcileOnStartup,
+		}
+	}
+	if p.DreamingEnabled != nil || p.DreamingInterval != nil ||
+		p.DreamingMinMessages != nil || p.DreamingContextMemories != nil ||
+		p.DreamingOnIdleSeconds != nil {
+		o.Dreaming = &config.DreamingOverride{
+			Enabled:         p.DreamingEnabled,
+			Interval:        p.DreamingInterval,
+			MinMessages:     p.DreamingMinMessages,
+			ContextMemories: p.DreamingContextMemories,
+			OnIdleSeconds:   p.DreamingOnIdleSeconds,
+		}
+	}
+	return o
+}
+
+// effectiveFromConfig flattens the resolved Config into the UI-friendly
+// shape. Mirrors the existing ConfigView used by the global Settings tab
+// but lives in handlers/ as a separate type to keep the boundaries clean.
+func effectiveFromConfig(c config.Config) handlers.EffectiveProjectConfig {
+	return handlers.EffectiveProjectConfig{
+		EmbeddingProvider:       c.Embedding.Provider,
+		EmbeddingModel:          c.Embedding.Model,
+		ReasoningProvider:       c.Reasoning.Provider,
+		ReasoningModel:          c.Reasoning.Model,
+		VoyageAPIKey:            c.Voyage.APIKey,
+		OpenAIAPIKey:            c.OpenAI.APIKey,
+		AnthropicAPIKey:         c.Anthropic.APIKey,
+		SyncEnabled:             c.Sync.Enabled,
+		SyncDir:                 c.Sync.Dir,
+		DreamingEnabled:         c.Dreaming.Enabled,
+		DreamingInterval:        c.Dreaming.Interval,
+		DreamingMinMessages:     c.Dreaming.MinMessages,
+		DreamingContextMemories: c.Dreaming.ContextMemories,
+		DreamingOnIdleSeconds:   c.Dreaming.OnIdleSeconds,
+	}
 }

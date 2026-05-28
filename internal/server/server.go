@@ -22,17 +22,20 @@ import (
 	"github.com/tomanagle/yullu/internal/store"
 )
 
-// Server holds the MCP server and its dependencies.
+// Server holds the MCP server and its dependencies. cfg is the global
+// base config; per-project resolution stacks .yullu/config.toml and the
+// user-private file on top of it via resolveProject().
 type Server struct {
 	mcp      *mcpsrv.MCPServer
 	store    *store.Store
 	embedder ai.Embedder
 	reasoner ai.Reasoner
-	syncCfg  config.SyncConfig
-	dreamCfg config.DreamingConfig
+	cfg      config.Config
 	logger   *slog.Logger
-	// writer is nil when sync is disabled or the server isn't inside a git
-	// repo. Handlers must check before logging.
+	// writer is the default event-log writer, built from the global
+	// SyncConfig at construction. Per-project sync_dir overrides will
+	// switch this to writerForProject() at the call sites that need it;
+	// see TODO marker in the dream/reconcile paths.
 	writer *memlog.Writer
 	// dreamMu serialises dream passes - concurrent dreams against the same
 	// session would race on the "read messages then delete" step.
@@ -41,35 +44,37 @@ type Server struct {
 	// trigger of the dream scheduler.
 	dreamStateMu          sync.Mutex
 	lastMessageRecordedAt time.Time
+	// projectCfgMu guards the resolved-config cache.
+	projectCfgMu sync.RWMutex
+	projectCfg   map[string]config.Config
 }
 
-// New constructs a Server with all tools registered. syncCfg controls
-// .yullu/ event logging; dreamCfg controls the dreamer (scheduler is
-// not started here - call StartScheduler from main). logger must be
-// non-nil - use applog.Discard() in tests.
-func New(s *store.Store, e ai.Embedder, r ai.Reasoner, syncCfg config.SyncConfig, dreamCfg config.DreamingConfig, logger *slog.Logger) *Server {
+// New constructs a Server with all tools registered. cfg is the global
+// base config; per-project resolution happens at call time. logger must
+// be non-nil - use applog.Discard() in tests.
+func New(s *store.Store, e ai.Embedder, r ai.Reasoner, cfg config.Config, logger *slog.Logger) *Server {
 	srv := &Server{
 		mcp: mcpsrv.NewMCPServer(
 			"yullu",
 			"0.1.0",
 			mcpsrv.WithToolCapabilities(true),
 		),
-		store:    s,
-		embedder: e,
-		reasoner: r,
-		syncCfg:  syncCfg,
-		dreamCfg: dreamCfg,
-		logger:   logger.With("component", "server"),
+		store:      s,
+		embedder:   e,
+		reasoner:   r,
+		cfg:        cfg,
+		logger:     logger.With("component", "server"),
+		projectCfg: make(map[string]config.Config),
 	}
 	// Advertise sampling so clients (Claude Code, Codex, Cursor) know we may
 	// ask them to run LLM completions on our behalf. The dreamer uses this
 	// for foreground passes so users can leverage their Pro/Plus subscription
 	// instead of paying for a separate API key.
 	srv.mcp.EnableSampling()
-	if syncCfg.Enabled {
+	if cfg.Sync.Enabled {
 		cwd, err := os.Getwd()
 		if err == nil {
-			srv.writer = memlog.NewWriter(scope.GitRoot(cwd), syncCfg.Dir)
+			srv.writer = memlog.NewWriter(scope.GitRoot(cwd), cfg.Sync.Dir)
 		}
 		if srv.writer == nil {
 			srv.logger.Warn("sync enabled but no git repo found; events will not be logged", "cwd", cwd)
@@ -79,6 +84,50 @@ func New(s *store.Store, e ai.Embedder, r ai.Reasoner, syncCfg config.SyncConfig
 	}
 	srv.registerTools()
 	return srv
+}
+
+// resolveProject returns the effective config for a project: global base
+// + repo-committed overrides + user-private overrides. Cached per
+// projectID; InvalidateProjectConfig drops the entry when overrides
+// change.
+func (s *Server) resolveProject(projectID string) config.Config {
+	if projectID == "" {
+		return s.cfg
+	}
+	s.projectCfgMu.RLock()
+	if c, ok := s.projectCfg[projectID]; ok {
+		s.projectCfgMu.RUnlock()
+		return c
+	}
+	s.projectCfgMu.RUnlock()
+
+	gitRoot := ""
+	if cwd, err := os.Getwd(); err == nil {
+		gitRoot = scope.GitRoot(cwd)
+	}
+	effective, warnings, err := config.Resolve(s.cfg, gitRoot, projectID)
+	if err != nil {
+		// Override resolution errors are non-fatal - fall back to global.
+		s.logger.Warn("resolve project config", "project_id", projectID, "err", err.Error())
+		effective = s.cfg
+	}
+	for _, w := range warnings {
+		s.logger.Warn("project override warning", "project_id", projectID, "msg", w)
+	}
+
+	s.projectCfgMu.Lock()
+	s.projectCfg[projectID] = effective
+	s.projectCfgMu.Unlock()
+	return effective
+}
+
+// InvalidateProjectConfig drops the cached resolved config for projectID
+// so the next resolveProject() picks up freshly-edited override files.
+// Called by app.SaveProjectOverrides after a write succeeds.
+func (s *Server) InvalidateProjectConfig(projectID string) {
+	s.projectCfgMu.Lock()
+	delete(s.projectCfg, projectID)
+	s.projectCfgMu.Unlock()
 }
 
 // ServeStdio runs the server over stdio until ctx is cancelled or stdin closes.
@@ -198,7 +247,7 @@ func (s *Server) logEvent(e memlog.Event) error {
 // if vec is nil or LogEmbeddings is disabled. Used by handlers to attach a
 // vector to a create/update event.
 func (s *Server) ownVectors(vec []float32) map[string][]float32 {
-	if vec == nil || !s.syncCfg.LogEmbeddings {
+	if vec == nil || !s.cfg.Sync.LogEmbeddings {
 		return nil
 	}
 	return map[string][]float32{s.embedder.ID(): vec}
@@ -382,7 +431,7 @@ func (s *Server) handleDreamNow(ctx context.Context, req mcp.CallToolRequest) (*
 	// process whatever's in the buffer, even small sessions.
 	res, err := s.Dream(ctx, DreamOptions{
 		SessionFilter:   req.GetString("session_id", ""),
-		ContextMemories: s.dreamCfg.ContextMemories,
+		ContextMemories: s.cfg.Dreaming.ContextMemories,
 	})
 	if err != nil {
 		return mcp.NewToolResultErrorFromErr("dream", err), nil
@@ -440,6 +489,27 @@ func (s *Server) handleRecordMessages(ctx context.Context, req mcp.CallToolReque
 		"project_id": projectID,
 		"count":      len(msgs),
 	})
+}
+
+// RecordSessionMessages is the non-MCP path into the session_messages
+// buffer. Used by the REST endpoint POST /api/messages (and therefore by
+// `yullu record-turn` from the Claude Code Stop hook). projectOverride may
+// be empty — in that case the server resolves the project from cwd via
+// scope.Resolve, same as the MCP tool does.
+func (s *Server) RecordSessionMessages(
+	ctx context.Context,
+	projectOverride, sessionID string,
+	msgs []store.SessionMessageInput,
+) (string, error) {
+	projectID, err := s.resolveProjectID(projectOverride)
+	if err != nil {
+		return "", fmt.Errorf("resolve project: %w", err)
+	}
+	if err := s.store.RecordSessionMessages(ctx, projectID, sessionID, msgs); err != nil {
+		return projectID, err
+	}
+	s.markMessageRecorded()
+	return projectID, nil
 }
 
 // markMessageRecorded stamps the wall-clock time of the most recent

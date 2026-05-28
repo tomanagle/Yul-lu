@@ -13,12 +13,12 @@ export default {
     extend: {
       fontFamily: {
         sans: [
-          'Inter',
-          '-apple-system',
-          'BlinkMacSystemFont',
+          "Inter",
+          "-apple-system",
+          "BlinkMacSystemFont",
           '"Segoe UI"',
-          'Roboto',
-          'sans-serif',
+          "Roboto",
+          "sans-serif",
         ],
       },
       colors: {

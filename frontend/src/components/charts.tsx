@@ -16,16 +16,16 @@ import {
   YAxis,
 } from "recharts";
 
-import type { DailyMemoryEvents, DailyUsage, UsageBucket } from "@/lib/types";
+import type { DailyMemoryEvents, DailyUsage, UsageBucket } from "@/lib/schemas";
 
 // Chart colours mirror the night-indigo + dream-violet palette in index.css.
 // Recharts SVG can't read CSS variables directly, so the values are inlined
 // - keep these in lockstep with --primary / --accent / --muted-foreground.
 const CHART_COLORS = {
-  created: "#6366F1",   // indigo-soft  - new memories
-  recalled: "#A78BFA",  // violet-soft  - retrievals
-  updated: "#22D3EE",   // cyan         - edits
-  deleted: "#F87171",   // soft red     - deletes
+  created: "#6366F1", // indigo-soft  - new memories
+  recalled: "#A78BFA", // violet-soft  - retrievals
+  updated: "#22D3EE", // cyan         - edits
+  deleted: "#F87171", // soft red     - deletes
   primary: "#6366F1",
   accent: "#7C3AED",
 };
@@ -40,7 +40,7 @@ const TOOLTIP_STYLE: React.CSSProperties = {
   border: "1px solid hsl(232, 18%, 24%)", // border
   borderRadius: 8,
   fontSize: 12,
-  color: "hsl(210, 40%, 96%)",            // foreground
+  color: "hsl(210, 40%, 96%)", // foreground
   boxShadow: "0 8px 24px hsl(222 47% 4% / 0.5)",
 };
 
@@ -50,11 +50,7 @@ function shortDay(iso: string): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-export function MemoryEventsChart({
-  data,
-}: {
-  data: DailyMemoryEvents[];
-}) {
+export function MemoryEventsChart({ data }: { data: DailyMemoryEvents[] }) {
   return (
     <ResponsiveContainer width="100%" height={240}>
       <AreaChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -110,16 +106,10 @@ export function UsageCostChart({ data }: { data: DailyUsage[] }) {
 
   return (
     <ResponsiveContainer width="100%" height={240}>
-      <LineChart
-        data={chartData}
-        margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
-      >
+      <LineChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="hsl(222, 14%, 18%)" />
         <XAxis dataKey="day" tickFormatter={shortDay} {...AXIS_STYLE} />
-        <YAxis
-          tickFormatter={(v: number) => `${v.toFixed(1)}¢`}
-          {...AXIS_STYLE}
-        />
+        <YAxis tickFormatter={(v: number) => `${v.toFixed(1)}¢`} {...AXIS_STYLE} />
         <Tooltip
           contentStyle={TOOLTIP_STYLE}
           labelFormatter={shortDay}
@@ -153,17 +143,10 @@ export function UsageCostChart({ data }: { data: DailyUsage[] }) {
   );
 }
 
-export function UsageByModelChart({
-  data,
-}: {
-  data: UsageBucket[];
-}) {
+export function UsageByModelChart({ data }: { data: UsageBucket[] }) {
   // Aggregate provider+model totals; flatten the per-kind rows so a model
   // that has both embed+reason rows shows as one bar.
-  const merged = new Map<
-    string,
-    { name: string; calls: number; cost: number }
-  >();
+  const merged = new Map<string, { name: string; calls: number; cost: number }>();
   for (const row of data) {
     const key = `${row.provider}:${row.model}`;
     const prev = merged.get(key) ?? { name: key, calls: 0, cost: 0 };
@@ -180,11 +163,7 @@ export function UsageByModelChart({
     }));
 
   if (chartData.length === 0) {
-    return (
-      <p className="py-8 text-center text-sm text-muted-foreground">
-        No usage yet.
-      </p>
-    );
+    return <p className="py-8 text-center text-sm text-muted-foreground">No usage yet.</p>;
   }
 
   return (
@@ -196,12 +175,7 @@ export function UsageByModelChart({
       >
         <CartesianGrid strokeDasharray="3 3" stroke="hsl(222, 14%, 18%)" />
         <XAxis type="number" allowDecimals={false} {...AXIS_STYLE} />
-        <YAxis
-          type="category"
-          dataKey="name"
-          width={170}
-          {...AXIS_STYLE}
-        />
+        <YAxis type="category" dataKey="name" width={170} {...AXIS_STYLE} />
         <Tooltip
           contentStyle={TOOLTIP_STYLE}
           formatter={(value: number, name: string) => {
@@ -211,11 +185,7 @@ export function UsageByModelChart({
         />
         <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} />
         <Bar dataKey="calls" name="Calls" fill={CHART_COLORS.primary} />
-        <Bar
-          dataKey="cost_dollars"
-          name="Cost"
-          fill={CHART_COLORS.accent}
-        />
+        <Bar dataKey="cost_dollars" name="Cost" fill={CHART_COLORS.accent} />
       </BarChart>
     </ResponsiveContainer>
   );

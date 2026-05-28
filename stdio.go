@@ -57,7 +57,7 @@ func runStdio() int {
 		"reasoner", reasonerID,
 	)
 
-	srv := server.New(st, embedder, reasoner, cfg.Sync, cfg.Dreaming, logger)
+	srv := server.New(st, embedder, reasoner, cfg, logger)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

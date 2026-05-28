@@ -7,16 +7,19 @@ import "net/http"
 // machine + the *store.Store + *server.Server) and hands it to Register,
 // which builds each handler and mounts it on the mux.
 type RegisterParams struct {
-	Status   StatusService
-	Config   ConfigService
-	Memory   MemoryReader
-	Editor   MemoryEditor
-	Projects ProjectLister
-	Graph    GraphReader
-	Stats    MemoryStatsReader
-	Usage    UsageReader
-	Dreamer  Dreamer
-	Session  SessionStatsProvider
+	Status           StatusService
+	Config           ConfigService
+	Memory           MemoryReader
+	Editor           MemoryEditor
+	Projects         ProjectLister
+	Graph            GraphReader
+	Stats            MemoryStatsReader
+	Usage            UsageReader
+	Dreamer          Dreamer
+	Session          SessionStatsProvider
+	DreamStats       DreamStatsReader
+	ProjectOverrides ProjectOverridesService
+	Messages         MessageRecorder
 
 	// DreamContextMemories is the [dreaming].context_memories value the
 	// PostDream handler passes to the dreamer on each call. Read once at
@@ -47,6 +50,9 @@ func Register(mux *http.ServeMux, p RegisterParams) {
 		Dreamer:         p.Dreamer,
 		ContextMemories: p.DreamContextMemories,
 	}))
+	mux.Handle("GET /api/dream/stats", NewGetDreamStatsHandler(GetDreamStatsHandlerParams{
+		Stats: p.DreamStats,
+	}))
 
 	mux.Handle("GET /api/stats", NewGetStatsHandler(GetStatsHandlerParams{Stats: p.Stats}))
 	mux.Handle("GET /api/stats/events", NewGetStatsEventsHandler(GetStatsEventsHandlerParams{Stats: p.Stats}))
@@ -55,4 +61,19 @@ func Register(mux *http.ServeMux, p RegisterParams) {
 	mux.Handle("GET /api/usage/summary", NewGetUsageSummaryHandler(GetUsageSummaryHandlerParams{Usage: p.Usage}))
 
 	mux.Handle("GET /api/graph", NewGetGraphHandler(GetGraphHandlerParams{Graph: p.Graph}))
+
+	// Per-project overrides. Path takes the project_id as the trailing
+	// segment - url-encoded since project_ids contain slashes
+	// ("github.com/owner/repo" → "github.com%2Fowner%2Frepo"). The id with
+	// slashes left intact would need a wildcard pattern; we keep things
+	// simple with single-segment matching and let the FE encode.
+	mux.Handle("GET /api/projects/{id}/overrides",
+		NewGetProjectOverridesHandler(GetProjectOverridesHandlerParams{Overrides: p.ProjectOverrides}))
+	mux.Handle("POST /api/projects/{id}/overrides",
+		NewPostProjectOverridesHandler(PostProjectOverridesHandlerParams{Overrides: p.ProjectOverrides}))
+
+	// Session-message intake for non-MCP clients (Claude Code Stop hook etc.).
+	// Mirrors the record_messages MCP tool but speaks plain REST.
+	mux.Handle("POST /api/messages",
+		NewPostMessagesHandler(PostMessagesHandlerParams{Recorder: p.Messages}))
 }

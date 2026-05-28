@@ -4,15 +4,9 @@
 // here.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import ForceGraph2D, {
-  type ForceGraphMethods,
-} from "react-force-graph-2d";
+import ForceGraph2D, { type ForceGraphMethods } from "react-force-graph-2d";
 
-import type {
-  GraphLink as GraphLinkT,
-  GraphNode as GraphNodeT,
-  MemoryGraph,
-} from "@/lib/types";
+import type { GraphLink as GraphLinkT, GraphNode as GraphNodeT, MemoryGraph } from "@/lib/schemas";
 import { Badge } from "@/components/ui/badge";
 import { shortUUID } from "@/lib/format";
 
@@ -20,24 +14,24 @@ import { shortUUID } from "@/lib/format";
 // instead of reading CSS variables. Keep these in lockstep with the indigo
 // + violet palette in index.css.
 export const GRAPH_COLORS = {
-  tagLink: "rgba(148, 163, 184, 0.28)",   // slate-400, faint
-  simLink: "rgba(167, 139, 250, 0.55)",   // violet-soft
-  nodeDefault: "#818CF8",                  // indigo-300
-  nodeHover: "#A78BFA",                    // violet-soft
-  label: "hsl(210, 40%, 96%)",             // foreground
+  tagLink: "rgba(148, 163, 184, 0.28)", // slate-400, faint
+  simLink: "rgba(167, 139, 250, 0.55)", // violet-soft
+  nodeDefault: "#818CF8", // indigo-300
+  nodeHover: "#A78BFA", // violet-soft
+  label: "hsl(210, 40%, 96%)", // foreground
   background: "hsl(222, 47%, 9%)",
 } as const;
 
 // Stable palette for tag-derived node colours. All sit within the night
 // theme - same hash → same colour across reloads.
 const TAG_PALETTE = [
-  "#818CF8",  // indigo-300
-  "#A78BFA",  // violet-soft
-  "#22D3EE",  // cyan
-  "#F472B6",  // soft pink
-  "#94A3B8",  // slate
-  "#60A5FA",  // sky blue
-  "#C4B5FD",  // lavender
+  "#818CF8", // indigo-300
+  "#A78BFA", // violet-soft
+  "#22D3EE", // cyan
+  "#F472B6", // soft pink
+  "#94A3B8", // slate
+  "#60A5FA", // sky blue
+  "#C4B5FD", // lavender
 ];
 
 export function colorForTag(tag: string): string {
@@ -88,9 +82,7 @@ export function useDecoratedGraph(
     });
     const links: DecoratedGraphLink[] = (graph?.links ?? [])
       .filter(
-        (l) =>
-          (l.kind === "tag" && showTagEdges) ||
-          (l.kind === "similarity" && showSimEdges),
+        (l) => (l.kind === "tag" && showTagEdges) || (l.kind === "similarity" && showSimEdges),
       )
       .map((l) => ({ ...l }));
     return { nodes, links };
@@ -111,9 +103,9 @@ export function MemoryGraphCanvas({
   loading: boolean;
   error: string | null;
 }) {
-  const fgRef = useRef<
-    ForceGraphMethods<DecoratedGraphNode, DecoratedGraphLink> | undefined
-  >(undefined);
+  const fgRef = useRef<ForceGraphMethods<DecoratedGraphNode, DecoratedGraphLink> | undefined>(
+    undefined,
+  );
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
   const [hover, setHover] = useState<DecoratedGraphNode | null>(null);
@@ -135,8 +127,7 @@ export function MemoryGraphCanvas({
     }
   }, [nodes.length, links.length]);
 
-  const canRender =
-    !loading && !error && nodes.length > 0 && size.w > 0 && size.h > 0;
+  const canRender = !loading && !error && nodes.length > 0 && size.w > 0 && size.h > 0;
 
   return (
     <div ref={containerRef} className="relative h-full w-full">
@@ -166,9 +157,7 @@ export function MemoryGraphCanvas({
           nodeRelSize={4}
           nodeVal={(n) => 4 + Math.min(20, n.recalls ?? 0)}
           nodeLabel={(n) => n.__label}
-          linkColor={(l) =>
-            l.kind === "tag" ? GRAPH_COLORS.tagLink : GRAPH_COLORS.simLink
-          }
+          linkColor={(l) => (l.kind === "tag" ? GRAPH_COLORS.tagLink : GRAPH_COLORS.simLink)}
           linkWidth={(l) => (l.kind === "similarity" ? 1.2 : 0.6)}
           linkDirectionalParticles={0}
           cooldownTicks={120}

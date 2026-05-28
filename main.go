@@ -39,6 +39,8 @@ func main() {
 			os.Exit(runUninstall(os.Args[2:]))
 		case "stdio":
 			os.Exit(runStdio())
+		case "record-turn":
+			os.Exit(runRecordTurn())
 		case "version", "--version", "-v":
 			println("Yul'lu " + version)
 			return
@@ -77,6 +79,9 @@ func main() {
 		Usage:                app,
 		Dreamer:              app,
 		Session:              app,
+		DreamStats:           app,
+		ProjectOverrides:     app,
+		Messages:             app,
 		DreamContextMemories: app.cfg.Dreaming.ContextMemories,
 	})
 	mux.Handle("/mcp", mcpProxy{app: app})
@@ -150,10 +155,18 @@ func printUsage() {
 
 Usage:
   yullu                     Start the desktop server (UI + REST + MCP on :47823)
-  yullu install [target…]   Install skill + register MCP for an assistant
-                            (targets: claude, codex; default: all detected)
-  yullu uninstall [target…] Reverse install
+  yullu install [target…]   Install skill + register MCP for an assistant.
+                            Targets: claude, codex, cursor (default: claude and
+                            codex if their config dirs exist). Flags:
+                              --service       install launchd/systemd auto-start
+                                              without prompting
+                              --no-service    skip the auto-start install entirely
+                              --yes / -y      answer yes to any interactive prompts
+  yullu uninstall [target…] Reverse install (also removes the service unit)
   yullu stdio               Run MCP over stdio (legacy - prefer HTTP via the server)
+  yullu record-turn         Internal: reads Claude Code Stop hook payload on stdin
+                            and records the last turn. Wired into ~/.claude/settings.json
+                            by 'yullu install claude'; not meant to be called directly.
   yullu version             Print version
   yullu help                Show this help
 

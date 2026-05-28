@@ -75,14 +75,17 @@ func newTestServer(t *testing.T, embedder ai.Embedder, reasoner ai.Reasoner) (*S
 	}
 	t.Cleanup(func() { _ = st.Close() })
 
-	cfg := config.SyncConfig{
-		Enabled:         true,
-		Dir:             ".yullu",
-		LogEmbeddings:   true,
-		ReuseEmbeddings: true,
-	}
 	// Dreaming disabled in tests so no background scheduler ever spawns.
-	srv := New(st, embedder, reasoner, cfg, config.DreamingConfig{}, applog.Discard())
+	cfg := config.Config{
+		Sync: config.SyncConfig{
+			Enabled:         true,
+			Dir:             ".yullu",
+			LogEmbeddings:   true,
+			ReuseEmbeddings: true,
+		},
+		Dreaming: config.DreamingConfig{},
+	}
+	srv := New(st, embedder, reasoner, cfg, applog.Discard())
 	if srv.writer == nil {
 		t.Fatalf("expected writer to be initialised inside a git repo")
 	}

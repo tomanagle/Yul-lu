@@ -1,7 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-import { useConfig, useSaveConfig } from "@/lib/queries";
-import type { ConfigView } from "@/lib/types";
+import {
+  useConfig,
+  useProjectOverrides,
+  useSaveConfig,
+  useSaveProjectOverrides,
+} from "@/lib/queries";
+import { useProjectScope } from "@/lib/project-scope";
+import type { ConfigView, ProjectOverridePayload } from "@/lib/schemas";
+import { cn } from "@/lib/utils";
 
 // Model catalogs: keep in sync with internal/ai/pricing.go and registry.go.
 // Empty value means "use the provider's default" - that's what the Go side
@@ -40,13 +47,7 @@ const REASONING_MODELS: Record<string, { value: string; label: string }[]> = {
 // option to this sentinel at the UI layer.
 const MODEL_DEFAULT = "__default__";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -58,7 +59,85 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 
+// SettingsPage is a tabbed shell. The Global tab edits the defaults that
+// apply to every project; the Project tab edits per-project overrides for
+// the currently-scoped project. Tabs persist their selection to localStorage
+// so a reload doesn't bounce the user back to Global.
+const SETTINGS_TAB_KEY = "yullu.settings.tab";
+
 export function SettingsPage() {
+  const { project } = useProjectScope();
+  const [tab, setTab] = useState<"global" | "project">(() => {
+    if (typeof window === "undefined") return "global";
+    return (window.localStorage.getItem(SETTINGS_TAB_KEY) as "global" | "project") ?? "global";
+  });
+
+  useEffect(() => {
+    window.localStorage.setItem(SETTINGS_TAB_KEY, tab);
+  }, [tab]);
+
+  return (
+    <div className="mx-auto max-w-2xl space-y-4">
+      <div className="inline-flex items-center gap-0.5 rounded-md border border-border/40 bg-card/40 p-0.5">
+        <TabButton active={tab === "global"} onClick={() => setTab("global")}>
+          Global
+        </TabButton>
+        <TabButton
+          active={tab === "project"}
+          onClick={() => setTab("project")}
+          disabled={!project}
+          title={!project ? "Pick a project in the sidebar first" : undefined}
+        >
+          Project{project ? ":" : ""}
+          {project && (
+            <span className="ml-1 max-w-[200px] truncate font-mono text-[11px] opacity-70">
+              {project}
+            </span>
+          )}
+        </TabButton>
+      </div>
+
+      {tab === "global" && <GlobalSettings />}
+      {tab === "project" && project && <ProjectSettings projectID={project} />}
+      {tab === "project" && !project && (
+        <p className="text-sm text-muted-foreground">
+          Pick a project in the sidebar to edit its overrides.
+        </p>
+      )}
+    </div>
+  );
+}
+
+type TabButtonProps = {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+  disabled?: boolean;
+  title?: string;
+};
+
+function TabButton({ active, onClick, children, disabled, title }: TabButtonProps) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={cn(
+        "flex items-center rounded px-3 py-1 text-xs font-medium transition-colors duration-150",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        active
+          ? "bg-primary/15 text-foreground shadow-[inset_0_0_0_1px_hsl(244_76%_51%/0.35)]"
+          : "text-muted-foreground hover:text-foreground",
+        disabled && "cursor-not-allowed opacity-40 hover:text-muted-foreground",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+function GlobalSettings() {
   const { data: initial } = useConfig();
   const [cfg, setCfg] = useState<ConfigView | null>(null);
   const save = useSaveConfig();
@@ -69,12 +148,11 @@ export function SettingsPage() {
 
   if (!cfg) return <p className="text-sm text-muted-foreground">Loading…</p>;
 
-  const update = (patch: Partial<ConfigView>) =>
-    setCfg({ ...cfg, ...patch });
+  const update = (patch: Partial<ConfigView>) => setCfg({ ...cfg, ...patch });
 
   return (
     <form
-      className="mx-auto max-w-2xl space-y-4"
+      className="space-y-4"
       onSubmit={(e) => {
         e.preventDefault();
         save.mutate(cfg);
@@ -83,9 +161,7 @@ export function SettingsPage() {
       <Card>
         <CardHeader>
           <CardTitle>Embedding</CardTitle>
-          <CardDescription>
-            The provider that turns memory content into vectors.
-          </CardDescription>
+          <CardDescription>The provider that turns memory content into vectors.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           <Field label="Provider">
@@ -116,27 +192,22 @@ export function SettingsPage() {
         <CardHeader>
           <CardTitle>Reasoning</CardTitle>
           <CardDescription>
-            Powers dreaming. Blank uses MCP sampling - your client (Claude
-            Code, Codex) makes the LLM call via its own subscription.
-            Configure a direct provider here to also enable background
-            dreaming.
+            Powers dreaming. Blank uses MCP sampling - your client (Claude Code, Codex) makes the
+            LLM call via its own subscription. Configure a direct provider here to also enable
+            background dreaming.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           <Field label="Provider">
             <Select
               value={cfg.reasoning_provider || "sampling"}
-              onValueChange={(v) =>
-                update({ reasoning_provider: v === "sampling" ? "" : v })
-              }
+              onValueChange={(v) => update({ reasoning_provider: v === "sampling" ? "" : v })}
             >
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="sampling">
-                  MCP sampling (use client subscription)
-                </SelectItem>
+                <SelectItem value="sampling">MCP sampling (use client subscription)</SelectItem>
                 <SelectItem value="anthropic">Anthropic</SelectItem>
                 <SelectItem value="openai">OpenAI</SelectItem>
               </SelectContent>
@@ -145,9 +216,7 @@ export function SettingsPage() {
           <Field label="Model">
             <ModelSelect
               models={
-                cfg.reasoning_provider
-                  ? REASONING_MODELS[cfg.reasoning_provider] ?? []
-                  : []
+                cfg.reasoning_provider ? (REASONING_MODELS[cfg.reasoning_provider] ?? []) : []
               }
               value={cfg.reasoning_model}
               onChange={(v) => update({ reasoning_model: v })}
@@ -161,9 +230,7 @@ export function SettingsPage() {
       <Card>
         <CardHeader>
           <CardTitle>API keys</CardTitle>
-          <CardDescription>
-            Stored in plain text in your local config.toml.
-          </CardDescription>
+          <CardDescription>Stored in plain text in your local config.toml.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           <Field label="Voyage">
@@ -207,17 +274,14 @@ export function SettingsPage() {
             onChange={(v) => update({ sync_enabled: v })}
           />
           <p className="text-xs text-muted-foreground">
-            Dreaming controls live on the Dreaming page - manual trigger,
-            schedule, and the toggle.
+            Dreaming controls live on the Dreaming page - manual trigger, schedule, and the toggle.
           </p>
         </CardContent>
       </Card>
 
       {save.error && (
         <Card className="border-destructive/40 bg-destructive/10">
-          <CardContent className="p-3 text-sm text-destructive">
-            {String(save.error)}
-          </CardContent>
+          <CardContent className="p-3 text-sm text-destructive">{String(save.error)}</CardContent>
         </Card>
       )}
 
@@ -302,4 +366,304 @@ function ToggleRow({
       <Switch checked={checked} onCheckedChange={onChange} />
     </div>
   );
+}
+
+// ----- Project-scoped overrides --------------------------------------------
+
+type ProjectSettingsProps = {
+  projectID: string;
+};
+
+// ProjectSettings edits the two override layers for one project. The layer
+// each field belongs to is hard-coded (private vs team-shared) so the user
+// can't accidentally commit secrets to the repo. Fields with no override
+// fall through to the effective value, shown as a placeholder hint.
+function ProjectSettings({ projectID }: ProjectSettingsProps) {
+  const { data: overrides, isLoading } = useProjectOverrides(projectID);
+  const save = useSaveProjectOverrides(projectID);
+
+  // Local form state mirrors the two layers separately so we can POST them
+  // back unchanged for fields the user didn't touch.
+  const [repo, setRepo] = useState<ProjectOverridePayload | null>(null);
+  const [user, setUser] = useState<ProjectOverridePayload | null>(null);
+
+  useEffect(() => {
+    if (overrides && repo === null && user === null) {
+      setRepo({ ...overrides.repo });
+      setUser({ ...overrides.user });
+    }
+  }, [overrides, repo, user]);
+
+  const effective = overrides?.effective;
+
+  const repoSet = useMemo(
+    () =>
+      <K extends keyof ProjectOverridePayload>(k: K, v: ProjectOverridePayload[K] | undefined) => {
+        setRepo((prev) => ({ ...prev, [k]: v }));
+      },
+    [],
+  );
+  const userSet = useMemo(
+    () =>
+      <K extends keyof ProjectOverridePayload>(k: K, v: ProjectOverridePayload[K] | undefined) => {
+        setUser((prev) => ({ ...prev, [k]: v }));
+      },
+    [],
+  );
+
+  if (isLoading || !overrides || !repo || !user || !effective) {
+    return <p className="text-sm text-muted-foreground">Loading…</p>;
+  }
+
+  return (
+    <form
+      className="space-y-4"
+      onSubmit={(e) => {
+        e.preventDefault();
+        save.mutate({ repo, user });
+      }}
+    >
+      <Card>
+        <CardHeader>
+          <CardTitle>Team-shared (committed)</CardTitle>
+          <CardDescription>
+            Stored in{" "}
+            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+              .yullu/config.toml
+            </code>{" "}
+            inside the repo. Anyone who clones the project picks these up automatically. API keys
+            can't go here — use the private section below for those.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <OverrideField
+            label="Sync directory"
+            inherited={effective.sync_dir}
+            value={repo.sync_dir}
+            onChange={(v) => repoSet("sync_dir", v)}
+            placeholder=".yullu"
+            hint='Where committed memory events live ("." prefix recommended).'
+          />
+          <OverrideToggle
+            label="Dreaming enabled"
+            inherited={effective.dreaming_enabled}
+            value={repo.dreaming_enabled}
+            onChange={(v) => repoSet("dreaming_enabled", v)}
+          />
+          <OverrideField
+            label="Dreaming interval"
+            inherited={effective.dreaming_interval}
+            value={repo.dreaming_interval}
+            onChange={(v) => repoSet("dreaming_interval", v)}
+            placeholder="30m"
+            hint='Go duration string ("15m", "1h").'
+          />
+          <OverrideNumber
+            label="Min messages per session"
+            inherited={effective.dreaming_min_messages}
+            value={repo.dreaming_min_messages}
+            onChange={(v) => repoSet("dreaming_min_messages", v)}
+          />
+          <OverrideNumber
+            label="Context memories per pass"
+            inherited={effective.dreaming_context_memories}
+            value={repo.dreaming_context_memories}
+            onChange={(v) => repoSet("dreaming_context_memories", v)}
+          />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Private (this machine)</CardTitle>
+          <CardDescription>
+            Stored in{" "}
+            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+              ~/.config/yullu/projects/…
+            </code>
+            . Never committed. Use this for project-specific API keys (e.g. a work key for one repo,
+            personal for another).
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <OverrideField
+            label="Voyage API key"
+            inherited={mask(effective.voyage_api_key)}
+            value={user.voyage_api_key}
+            onChange={(v) => userSet("voyage_api_key", v)}
+            placeholder="pa-..."
+            password
+          />
+          <OverrideField
+            label="OpenAI API key"
+            inherited={mask(effective.openai_api_key)}
+            value={user.openai_api_key}
+            onChange={(v) => userSet("openai_api_key", v)}
+            placeholder="sk-..."
+            password
+          />
+          <OverrideField
+            label="Anthropic API key"
+            inherited={mask(effective.anthropic_api_key)}
+            value={user.anthropic_api_key}
+            onChange={(v) => userSet("anthropic_api_key", v)}
+            placeholder="sk-ant-..."
+            password
+          />
+        </CardContent>
+      </Card>
+
+      {(overrides.warnings?.length ?? 0) > 0 && (
+        <Card className="border-amber-500/40 bg-amber-500/10">
+          <CardContent className="p-3 text-xs text-amber-300">
+            {overrides.warnings!.map((w, i) => (
+              <div key={i}>{w}</div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {save.error && (
+        <Card className="border-destructive/40 bg-destructive/10">
+          <CardContent className="p-3 text-sm text-destructive">{String(save.error)}</CardContent>
+        </Card>
+      )}
+
+      <div className="flex justify-end">
+        <Button type="submit" disabled={save.isPending}>
+          {save.isPending ? "Saving…" : "Save overrides"}
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+// OverrideField is the shared text-input row. The toggle determines whether
+// the field overrides the inherited value; when off, the input is disabled
+// and the inherited value shows as the placeholder.
+type OverrideFieldProps = {
+  label: string;
+  inherited: string;
+  value: string | undefined;
+  onChange: (v: string | undefined) => void;
+  placeholder?: string;
+  hint?: string;
+  password?: boolean;
+};
+
+function OverrideField({
+  label,
+  inherited,
+  value,
+  onChange,
+  placeholder,
+  hint,
+  password,
+}: OverrideFieldProps) {
+  const overridden = value !== undefined;
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <Label className="text-sm">{label}</Label>
+        <div className="flex items-center gap-2">
+          <Label className="cursor-pointer text-[11px] text-muted-foreground">Override</Label>
+          <Switch
+            checked={overridden}
+            onCheckedChange={(on) => onChange(on ? (value ?? "") : undefined)}
+          />
+        </div>
+      </div>
+      <Input
+        type={password ? "password" : "text"}
+        value={overridden ? (value ?? "") : ""}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={overridden ? placeholder : `Inherits: ${inherited || "(empty)"}`}
+        disabled={!overridden}
+        autoComplete="off"
+      />
+      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+    </div>
+  );
+}
+
+// OverrideToggle is a boolean override — switch + inherited badge.
+function OverrideToggle({
+  label,
+  inherited,
+  value,
+  onChange,
+}: {
+  label: string;
+  inherited: boolean;
+  value: boolean | undefined;
+  onChange: (v: boolean | undefined) => void;
+}) {
+  const overridden = value !== undefined;
+  return (
+    <div className="flex items-center justify-between rounded-md border p-3">
+      <div>
+        <Label className="cursor-pointer">{label}</Label>
+        {!overridden && (
+          <p className="text-[11px] text-muted-foreground">
+            Inherits: {inherited ? "enabled" : "disabled"}
+          </p>
+        )}
+      </div>
+      <div className="flex items-center gap-3">
+        {overridden && <Switch checked={!!value} onCheckedChange={(v) => onChange(v)} />}
+        <Label className="cursor-pointer text-[11px] text-muted-foreground">Override</Label>
+        <Switch
+          checked={overridden}
+          onCheckedChange={(on) => onChange(on ? !!value || inherited : undefined)}
+        />
+      </div>
+    </div>
+  );
+}
+
+// OverrideNumber is a numeric override field — same UX as OverrideField but
+// stores a number (or undefined for "inherit"). Sentinel comparison handles
+// the "user typed nothing" case without flipping to inherit.
+function OverrideNumber({
+  label,
+  inherited,
+  value,
+  onChange,
+}: {
+  label: string;
+  inherited: number;
+  value: number | undefined;
+  onChange: (v: number | undefined) => void;
+}) {
+  const overridden = value !== undefined;
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <Label className="text-sm">{label}</Label>
+        <div className="flex items-center gap-2">
+          <Label className="cursor-pointer text-[11px] text-muted-foreground">Override</Label>
+          <Switch
+            checked={overridden}
+            onCheckedChange={(on) => onChange(on ? (value ?? inherited) : undefined)}
+          />
+        </div>
+      </div>
+      <Input
+        type="number"
+        min={0}
+        value={overridden ? String(value ?? "") : ""}
+        onChange={(e) => onChange(Number(e.target.value) || 0)}
+        placeholder={overridden ? undefined : `Inherits: ${inherited}`}
+        disabled={!overridden}
+      />
+    </div>
+  );
+}
+
+// mask redacts API keys for display. Returns a string of asterisks the same
+// length-class as the original ("(set)" vs "(empty)") so the user can tell
+// at a glance whether there's an inherited value without seeing the secret.
+function mask(s: string): string {
+  if (!s) return "(empty)";
+  return "•".repeat(8) + " (set)";
 }

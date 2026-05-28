@@ -3,11 +3,7 @@ import { RefreshCw } from "lucide-react";
 
 import { useMemoryGraph, useStatus } from "@/lib/queries";
 import { useProjectScope } from "@/lib/project-scope";
-import {
-  GRAPH_COLORS,
-  MemoryGraphCanvas,
-  useDecoratedGraph,
-} from "@/components/memory-graph";
+import { GRAPH_COLORS, MemoryGraphCanvas, useDecoratedGraph } from "@/components/memory-graph";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
@@ -38,21 +34,13 @@ export function GraphPage() {
       <Card className="shrink-0">
         <CardContent className="flex flex-wrap items-center gap-4 p-3">
           <div className="flex flex-1 items-center gap-2">
-            <Switch
-              checked={showTagEdges}
-              onCheckedChange={setShowTagEdges}
-              id="tag-edges"
-            />
+            <Switch checked={showTagEdges} onCheckedChange={setShowTagEdges} id="tag-edges" />
             <Label htmlFor="tag-edges" className="cursor-pointer text-sm">
               Tag edges
             </Label>
           </div>
           <div className="flex items-center gap-2">
-            <Switch
-              checked={showSimEdges}
-              onCheckedChange={setShowSimEdges}
-              id="sim-edges"
-            />
+            <Switch checked={showSimEdges} onCheckedChange={setShowSimEdges} id="sim-edges" />
             <Label htmlFor="sim-edges" className="cursor-pointer text-sm">
               Similarity edges
             </Label>
@@ -64,9 +52,7 @@ export function GraphPage() {
             onClick={() => graphQuery.refetch()}
             disabled={graphQuery.isFetching}
           >
-            <RefreshCw
-              className={graphQuery.isFetching ? "animate-spin" : ""}
-            />
+            <RefreshCw className={graphQuery.isFetching ? "animate-spin" : ""} />
             Refresh
           </Button>
         </CardContent>
@@ -90,13 +76,7 @@ export function GraphPage() {
   );
 }
 
-function Legend({
-  nodeCount,
-  edgeCount,
-}: {
-  nodeCount: number;
-  edgeCount: number;
-}) {
+function Legend({ nodeCount, edgeCount }: { nodeCount: number; edgeCount: number }) {
   return (
     <div className="flex items-center gap-4 text-xs text-muted-foreground">
       <span>
@@ -117,9 +97,7 @@ function Legend({
         />
         shared tag
       </span>
-      <span className="flex items-center gap-1.5">
-        Node size ∝ recall count
-      </span>
+      <span className="flex items-center gap-1.5">Node size ∝ recall count</span>
     </div>
   );
 }

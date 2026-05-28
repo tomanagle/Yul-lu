@@ -24,7 +24,8 @@ FRONTEND_DIST := $(FRONTEND_DIR)/dist
 help: ## Show available targets
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 	@echo
-	@echo "Primary:    make start    (build + launch the desktop server at http://localhost:47823)"
+	@echo "First-time install:  make install  (then run \`yullu install\` to wire your AI assistant)"
+	@echo "Just run it:         make start    (builds + launches at http://localhost:47823)"
 	@echo "Requires:   Bun (brew install oven-sh/bun/bun); a Voyage API key (free at voyageai.com)"
 
 # ---------------------------------------------------------------------------
@@ -112,7 +113,7 @@ air-install:
 
 register: ## Print the claude mcp add command for the desktop server
 	@echo
-	@echo "Make sure the server is running ('make start'), then:"
+	@echo "Make sure the server is running ('yullu' or 'make start'), then:"
 	@echo "  claude mcp add yullu --transport http http://localhost:47823/mcp"
 	@echo
 
@@ -137,7 +138,7 @@ tidy: ## go mod tidy
 fmt: ## Format Go sources
 	gofmt -s -w .
 
-vet: ## Run go vet
+vet: ensure-dist ## Run go vet (depends on dist existing so //go:embed resolves)
 	go vet -tags $(GO_TAGS) ./...
 
 clean: ## Remove built artifacts

@@ -1,24 +1,12 @@
 import { useEffect, useState } from "react";
 import { Sparkles } from "lucide-react";
 
-import {
-  useConfig,
-  useDream,
-  useSaveConfig,
-  useSessionStats,
-  useStatus,
-} from "@/lib/queries";
+import { useConfig, useDream, useSaveConfig, useSessionStats, useStatus } from "@/lib/queries";
 import { useProjectScope } from "@/lib/project-scope";
-import type { ConfigView, DreamResult } from "@/lib/types";
+import type { ConfigView, DreamResult } from "@/lib/schemas";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -55,8 +43,7 @@ function BufferCard({ project }: { project: string }) {
       <CardHeader>
         <CardTitle>Dream buffer</CardTitle>
         <CardDescription>
-          Conversation turns recorded by your MCP client, waiting to be
-          processed into memories.
+          Conversation turns recorded by your MCP client, waiting to be processed into memories.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -76,8 +63,8 @@ function BufferCard({ project }: { project: string }) {
 
         {messages === 0 && (
           <p className="text-xs text-muted-foreground">
-            Nothing to dream yet. Memories are extracted from messages your
-            MCP client pushes via <code>record_messages</code>.
+            Nothing to dream about yet. Memories are extracted from messages your MCP client pushes
+            via <code>record_messages</code>.
           </p>
         )}
 
@@ -97,9 +84,7 @@ function Stat({ label, value }: { label: string; value: number }) {
   return (
     <div>
       <div className="text-3xl font-semibold tabular-nums">{value}</div>
-      <div className="text-xs uppercase tracking-wide text-muted-foreground">
-        {label}
-      </div>
+      <div className="text-xs uppercase tracking-wide text-muted-foreground">{label}</div>
     </div>
   );
 }
@@ -147,8 +132,7 @@ function ScheduleCard() {
 
   if (!cfg) return null;
 
-  const update = (patch: Partial<ConfigView>) =>
-    setCfg({ ...cfg, ...patch });
+  const update = (patch: Partial<ConfigView>) => setCfg({ ...cfg, ...patch });
 
   return (
     <form
@@ -161,9 +145,8 @@ function ScheduleCard() {
         <CardHeader>
           <CardTitle>Schedule</CardTitle>
           <CardDescription>
-            How the background dreamer runs. Requires a direct reasoner
-            (Anthropic or OpenAI) - sampling-via-client can't fire from a
-            timer because there's no live client session.
+            How the background dreamer runs. Requires a direct reasoner (Anthropic or OpenAI) -
+            sampling-via-client can't fire from a timer because there's no live client session.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -194,9 +177,7 @@ function ScheduleCard() {
               type="number"
               min={0}
               value={cfg.dreaming_min_messages}
-              onChange={(e) =>
-                update({ dreaming_min_messages: Number(e.target.value) || 0 })
-              }
+              onChange={(e) => update({ dreaming_min_messages: Number(e.target.value) || 0 })}
             />
           </Field>
 
@@ -208,9 +189,7 @@ function ScheduleCard() {
               type="number"
               min={0}
               value={cfg.dreaming_context_memories}
-              onChange={(e) =>
-                update({ dreaming_context_memories: Number(e.target.value) || 0 })
-              }
+              onChange={(e) => update({ dreaming_context_memories: Number(e.target.value) || 0 })}
             />
           </Field>
 
@@ -222,9 +201,7 @@ function ScheduleCard() {
               type="number"
               min={0}
               value={cfg.dreaming_on_idle_seconds}
-              onChange={(e) =>
-                update({ dreaming_on_idle_seconds: Number(e.target.value) || 0 })
-              }
+              onChange={(e) => update({ dreaming_on_idle_seconds: Number(e.target.value) || 0 })}
             />
           </Field>
 

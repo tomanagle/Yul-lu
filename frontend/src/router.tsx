@@ -31,10 +31,7 @@ import { MemoriesPage } from "@/routes/memories";
 import { SettingsPage } from "@/routes/settings";
 import { StatsPage } from "@/routes/stats";
 import { useProjects } from "@/lib/queries";
-import {
-  ProjectScopeProvider,
-  useProjectScope,
-} from "@/lib/project-scope";
+import { ProjectScopeProvider, useProjectScope } from "@/lib/project-scope";
 import {
   Select,
   SelectContent,
@@ -90,10 +87,7 @@ function RootLayout() {
         {/* Floating collapse tab — sits on the seam between the sidebar and
             the main content, anchored vertically near the top so it's easy
             to grab. Flips its chevron based on state. */}
-        <CollapseHandle
-          collapsed={collapsed}
-          onToggle={() => setCollapsed((v) => !v)}
-        />
+        <CollapseHandle collapsed={collapsed} onToggle={() => setCollapsed((v) => !v)} />
 
         <div className="flex min-w-0 flex-1 flex-col">
           <TopBar />
@@ -150,9 +144,7 @@ function SidebarBrand({ collapsed }: { collapsed: boolean }) {
         <Brain className="relative h-3.5 w-3.5 text-violet-soft" />
       </span>
       {!collapsed && (
-        <span className="text-sm font-semibold tracking-tight text-foreground">
-          Yul'lu
-        </span>
+        <span className="text-sm font-semibold tracking-tight text-foreground">Yul'lu</span>
       )}
     </div>
   );
@@ -168,10 +160,7 @@ function ProjectPicker({ collapsed }: { collapsed: boolean }) {
 
   if (collapsed) {
     return (
-      <div
-        className="flex justify-center px-0 pb-2"
-        title={project || "All projects"}
-      >
+      <div className="flex justify-center px-0 pb-2" title={project || "All projects"}>
         <FolderOpen className="h-4 w-4 text-muted-foreground" />
       </div>
     );
@@ -199,13 +188,7 @@ function ProjectPicker({ collapsed }: { collapsed: boolean }) {
   );
 }
 
-function NavItem({
-  entry,
-  collapsed,
-}: {
-  entry: NavEntry;
-  collapsed: boolean;
-}) {
+function NavItem({ entry, collapsed }: { entry: NavEntry; collapsed: boolean }) {
   return (
     <Link
       to={entry.to}
@@ -231,13 +214,7 @@ function NavItem({
 // sidebar and the content area. Positioned absolutely so it doesn't push
 // the layout; sits at viewport-relative top so it's reachable without
 // scrolling. The chevron flips to indicate which way it'll collapse.
-function CollapseHandle({
-  collapsed,
-  onToggle,
-}: {
-  collapsed: boolean;
-  onToggle: () => void;
-}) {
+function CollapseHandle({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
   return (
     <button
       type="button"
@@ -269,9 +246,7 @@ function TopBar() {
   const title = TITLES[location.pathname] ?? "Yul'lu";
   return (
     <header className="flex h-12 items-center border-b border-border/40 bg-card/40 px-6 backdrop-blur-sm">
-      <span className="text-sm font-semibold tracking-tight text-foreground">
-        {title}
-      </span>
+      <span className="text-sm font-semibold tracking-tight text-foreground">{title}</span>
     </header>
   );
 }

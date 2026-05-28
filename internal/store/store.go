@@ -167,6 +167,25 @@ func (s *Store) init(embedderID string) error {
 		`CREATE INDEX IF NOT EXISTS idx_memory_events_kind ON memory_events(kind, at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_events_memory ON memory_events(memory_id, at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_events_project ON memory_events(project_id, at DESC)`,
+		// Dream-pass log: one row per non-skipped dream run, recording the
+		// counts the reasoner produced. Used by the Stats dashboard to show
+		// "how active is the dreamer" without needing to scan memory_events.
+		// Local-only - never sync'd. `at` is a unix milli timestamp so
+		// integer comparisons match the surrounding tables.
+		`CREATE TABLE IF NOT EXISTS dream_passes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			at INTEGER NOT NULL,
+			project_id TEXT NOT NULL,
+			sessions_processed INTEGER NOT NULL DEFAULT 0,
+			messages_processed INTEGER NOT NULL DEFAULT 0,
+			ops_created INTEGER NOT NULL DEFAULT 0,
+			ops_updated INTEGER NOT NULL DEFAULT 0,
+			ops_deleted INTEGER NOT NULL DEFAULT 0,
+			ops_skipped INTEGER NOT NULL DEFAULT 0,
+			errors_json TEXT
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_dream_passes_at ON dream_passes(at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_dream_passes_project ON dream_passes(project_id, at DESC)`,
 		// Full-text search index over memory content + tags. Free, local,
 		// BM25-ranked. Backfilled from `memories` on first creation; kept in
 		// sync by the triggers below.
@@ -1655,6 +1674,113 @@ func nullableString(s string) any {
 		return nil
 	}
 	return s
+}
+
+// DreamPassRecord captures the result of one dream pass for telemetry.
+// Sessions and message counts mirror the server.DreamResult shape but live
+// here so the store layer doesn't import server.
+type DreamPassRecord struct {
+	ProjectID         string
+	SessionsProcessed int
+	MessagesProcessed int
+	OpsCreated        int
+	OpsUpdated        int
+	OpsDeleted        int
+	OpsSkipped        int
+	Errors            []string
+}
+
+// RecordDreamPass inserts a row into dream_passes describing what a single
+// dream pass accomplished. Failures are logged but never returned - this is
+// telemetry; the dream itself already succeeded by the time we get here.
+// Skipped passes (single-flight collisions) should NOT be recorded - they
+// represent "nothing happened" and would pollute averages.
+func (s *Store) RecordDreamPass(ctx context.Context, rec DreamPassRecord) {
+	var errsJSON sql.NullString
+	if len(rec.Errors) > 0 {
+		if b, err := json.Marshal(rec.Errors); err == nil {
+			errsJSON = sql.NullString{String: string(b), Valid: true}
+		}
+	}
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO dream_passes(
+			at, project_id,
+			sessions_processed, messages_processed,
+			ops_created, ops_updated, ops_deleted, ops_skipped,
+			errors_json
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		time.Now().Unix(), rec.ProjectID,
+		rec.SessionsProcessed, rec.MessagesProcessed,
+		rec.OpsCreated, rec.OpsUpdated, rec.OpsDeleted, rec.OpsSkipped,
+		errsJSON,
+	); err != nil {
+		s.recordMemoryEventErr = err
+	}
+}
+
+// DreamStats is the dashboard view of dream-pass activity over a window.
+// LastPassAt is omitted from JSON when no passes ran in the window (the
+// zero time.Time value), so clients can use absence as the empty signal
+// instead of having to filter "0001-01-01T..." strings.
+type DreamStats struct {
+	ProjectID         string    `json:"project_id"`
+	Passes            int       `json:"passes"`
+	SessionsProcessed int       `json:"sessions_processed"`
+	MessagesProcessed int       `json:"messages_processed"`
+	OpsCreated        int       `json:"ops_created"`
+	OpsUpdated        int       `json:"ops_updated"`
+	OpsDeleted        int       `json:"ops_deleted"`
+	OpsSkipped        int       `json:"ops_skipped"`
+	Errors            int       `json:"errors"`
+	LastPassAt        time.Time `json:"last_pass_at,omitzero"`
+}
+
+// DreamStats aggregates dream_passes rows over the trailing `days` window.
+// projectID == "" spans every project. days <= 0 defaults to 30.
+func (s *Store) DreamStats(ctx context.Context, projectID string, days int) (DreamStats, error) {
+	if days <= 0 {
+		days = 30
+	}
+	cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour).Unix()
+
+	q := `SELECT
+			COUNT(*),
+			COALESCE(SUM(sessions_processed), 0),
+			COALESCE(SUM(messages_processed), 0),
+			COALESCE(SUM(ops_created), 0),
+			COALESCE(SUM(ops_updated), 0),
+			COALESCE(SUM(ops_deleted), 0),
+			COALESCE(SUM(ops_skipped), 0),
+			COALESCE(SUM(CASE WHEN errors_json IS NOT NULL AND errors_json != '[]' THEN 1 ELSE 0 END), 0),
+			COALESCE(MAX(at), 0)
+		FROM dream_passes
+		WHERE at >= ?`
+	args := []any{cutoff}
+	if projectID != "" {
+		q += ` AND project_id = ?`
+		args = append(args, projectID)
+	}
+
+	var ds DreamStats
+	ds.ProjectID = projectID
+	var lastAt int64
+	if err := s.db.QueryRowContext(ctx, q, args...).Scan(
+		&ds.Passes,
+		&ds.SessionsProcessed,
+		&ds.MessagesProcessed,
+		&ds.OpsCreated,
+		&ds.OpsUpdated,
+		&ds.OpsDeleted,
+		&ds.OpsSkipped,
+		&ds.Errors,
+		&lastAt,
+	); err != nil {
+		return DreamStats{}, err
+	}
+	if lastAt > 0 {
+		ds.LastPassAt = time.Unix(lastAt, 0)
+	}
+	return ds, nil
 }
 
 // MustDefaultDBPath returns the OS-appropriate default database path and

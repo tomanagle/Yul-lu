@@ -27,5 +27,5 @@ createRoot(document.getElementById("root")!).render(
       <ReactQueryDevtools initialIsOpen={false} buttonPosition="bottom-left" />
       <TanStackRouterDevtools router={router} position="bottom-right" />
     </QueryClientProvider>
-  </React.StrictMode>
+  </React.StrictMode>,
 );

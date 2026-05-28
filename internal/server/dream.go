@@ -125,6 +125,20 @@ func (s *Server) Dream(ctx context.Context, opts DreamOptions) (*DreamResult, er
 		res.OpsDeleted += sessRes.OpsDeleted
 		res.OpsSkipped += sessRes.OpsSkipped
 	}
+
+	// Persist the pass for the Stats dashboard. Only non-skipped passes go
+	// to dream_passes (single-flight collisions return Skipped=true above
+	// and would skew the averages). Telemetry; never blocks the result.
+	s.store.RecordDreamPass(ctx, store.DreamPassRecord{
+		ProjectID:         projectID,
+		SessionsProcessed: res.SessionsProcessed,
+		MessagesProcessed: res.MessagesProcessed,
+		OpsCreated:        res.OpsCreated,
+		OpsUpdated:        res.OpsUpdated,
+		OpsDeleted:        res.OpsDeleted,
+		OpsSkipped:        res.OpsSkipped,
+		Errors:            res.Errors,
+	})
 	return res, nil
 }
 
@@ -259,11 +273,11 @@ func (s *Server) applyDreamOp(ctx context.Context, projectID string, op dreamOp,
 // unprocessed messages. The single-flight lock inside Dream means the
 // scheduler can't collide with dream_now.
 func (s *Server) StartScheduler(ctx context.Context) {
-	if !s.dreamCfg.Enabled {
+	if !s.cfg.Dreaming.Enabled {
 		return
 	}
-	interval := s.dreamCfg.IntervalDuration()
-	idle := time.Duration(s.dreamCfg.OnIdleSeconds) * time.Second
+	interval := s.cfg.Dreaming.IntervalDuration()
+	idle := time.Duration(s.cfg.Dreaming.OnIdleSeconds) * time.Second
 
 	poll := 5 * time.Second
 	if interval < poll {
@@ -277,8 +291,8 @@ func (s *Server) StartScheduler(ctx context.Context) {
 	}
 	s.logger.Info("dream scheduler started",
 		"interval", interval.String(),
-		"min_messages", s.dreamCfg.MinMessages,
-		"on_idle_seconds", s.dreamCfg.OnIdleSeconds,
+		"min_messages", s.cfg.Dreaming.MinMessages,
+		"on_idle_seconds", s.cfg.Dreaming.OnIdleSeconds,
 		"poll", poll.String(),
 	)
 	go s.runScheduler(ctx, interval, idle, poll)
@@ -339,9 +353,19 @@ func (s *Server) hasUnprocessedMessages(ctx context.Context) bool {
 }
 
 func (s *Server) runScheduledDream(ctx context.Context) {
+	// Resolve per-project so "turn down dreaming for project X" takes effect
+	// even on scheduler-driven passes. CWD's project id is the natural
+	// scope for the scheduler — it follows the desktop server's working dir.
+	cwd, err := os.Getwd()
+	projectID := ""
+	if err == nil {
+		projectID, _ = scope.Resolve(cwd)
+	}
+	dc := s.resolveProject(projectID).Dreaming
 	res, err := s.Dream(ctx, DreamOptions{
-		MinMessages:     s.dreamCfg.MinMessages,
-		ContextMemories: s.dreamCfg.ContextMemories,
+		ProjectID:       projectID,
+		MinMessages:     dc.MinMessages,
+		ContextMemories: dc.ContextMemories,
 	})
 	if err != nil {
 		s.logger.Error("scheduled dream failed", "err", err.Error())

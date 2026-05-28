@@ -1,24 +1,36 @@
 // Thin fetch wrapper for the Go REST API at /api/*. Each exported function
-// mirrors a method on the Go App struct; the return types live in types.ts.
+// mirrors a method on the Go App struct and parses the response through a
+// zod schema (see lib/schemas.ts) - so wire-format drift between the
+// server and the client surfaces as a thrown ZodError at the boundary
+// instead of a silent undefined deep inside a chart.
+//
 // Errors throw with the server-reported message so TanStack Query surfaces
 // them as `query.error.message`.
 
-// Type imports are aliased to avoid colliding with the exported function
-// names below (e.g. the `Status` function returns a `StatusT`).
-import type {
-  ConfigView as ConfigViewT,
-  DailyMemoryEvents as DailyMemoryEventsT,
-  DailyUsage as DailyUsageT,
-  DreamResult as DreamResultT,
-  Memory as MemoryT,
-  MemoryGraph as MemoryGraphT,
-  MemoryStats as MemoryStatsT,
-  SessionStats as SessionStatsT,
-  Status as StatusT,
-  UsageBucket as UsageBucketT,
-} from "./types";
+import type { z } from "zod";
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+import {
+  ConfigViewSchema,
+  DailyMemoryEventsListSchema,
+  DailyUsageListSchema,
+  DreamResultSchema,
+  DreamStatsSchema,
+  MemoriesListSchema,
+  MemoryGraphSchema,
+  MemorySchema,
+  MemoryStatsSchema,
+  ProjectOverridesViewSchema,
+  ProjectsListSchema,
+  SessionStatsSchema,
+  StatusSchema,
+  UsageBucketListSchema,
+  type ConfigView,
+  type ProjectOverridePayload,
+} from "./schemas";
+
+// rawRequest is the unschema'd fetch — used by helpers below. Most
+// callers want `request` (validated) or `requestList` (validated + unwrapped).
+async function rawRequest(path: string, init?: RequestInit): Promise<unknown> {
   const res = await fetch(path, {
     headers: { "Content-Type": "application/json" },
     ...init,
@@ -33,105 +45,131 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new Error(msg);
   }
-  if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
+  if (res.status === 204) return undefined;
+  return await res.json();
 }
 
-// List endpoints return {items: [...]} envelopes (see writeList in
-// internal/handlers/json.go for the rationale). requestList unwraps so the
-// public API surface still hands callers a plain array. When we want to
-// surface pagination metadata later, we'll evolve this signature to return
-// the whole envelope.
+// request runs the response through `schema.parse`. The parse throws on a
+// schema mismatch, which means a server-side struct change without a
+// matching schema update fails loudly here instead of producing undefined
+// values in components.
+async function request<S extends z.ZodTypeAny>(
+  schema: S,
+  path: string,
+  init?: RequestInit,
+): Promise<z.infer<S>> {
+  const body = await rawRequest(path, init);
+  return schema.parse(body) as z.infer<S>;
+}
+
+// requestList unwraps the standard {items: [...]} envelope (see the
+// writeList helper on the Go side). The schema's item type carries through
+// to the return type — no extra generics needed at the call site.
 async function requestList<T>(
+  listSchema: z.ZodType<{ items: T[] }>,
   path: string,
   init?: RequestInit,
 ): Promise<T[]> {
-  const res = await request<{ items: T[] }>(path, init);
-  return res.items ?? [];
+  const body = await rawRequest(path, init);
+  return listSchema.parse(body).items;
 }
 
-export const Status = () => request<StatusT>("/api/status");
-export const Retry = () => request<StatusT>("/api/retry", { method: "POST" });
+// ----- Endpoints -----------------------------------------------------------
 
-export const GetConfig = () => request<ConfigViewT>("/api/config");
-export const SaveConfig = (cfg: ConfigViewT) =>
-  request<StatusT>("/api/config", {
+export const Status = () => request(StatusSchema, "/api/status");
+export const Retry = () => request(StatusSchema, "/api/retry", { method: "POST" });
+
+export const GetConfig = () => request(ConfigViewSchema, "/api/config");
+export const SaveConfig = (cfg: ConfigView) =>
+  request(StatusSchema, "/api/config", {
     method: "POST",
     body: JSON.stringify(cfg),
   });
 
-export const ListProjects = () => requestList<string>("/api/projects");
+export const ListProjects = () => requestList(ProjectsListSchema, "/api/projects");
 
-export function ListMemories(
-  projectID: string,
-  limit: number,
-): Promise<MemoryT[]> {
+export function ListMemories(projectID: string, limit: number) {
   const params = new URLSearchParams();
   if (projectID) params.set("project_id", projectID);
   if (limit) params.set("limit", String(limit));
-  return requestList<MemoryT>(`/api/memories?${params}`);
+  return requestList(MemoriesListSchema, `/api/memories?${params}`);
 }
 
-export function SearchMemories(
-  projectID: string,
-  query: string,
-  limit: number,
-): Promise<MemoryT[]> {
+export function SearchMemories(projectID: string, query: string, limit: number) {
   const params = new URLSearchParams();
   if (projectID) params.set("project_id", projectID);
   params.set("q", query);
   if (limit) params.set("limit", String(limit));
-  return requestList<MemoryT>(`/api/memories?${params}`);
+  return requestList(MemoriesListSchema, `/api/memories?${params}`);
 }
 
 export const UpdateMemory = (id: number, content: string, tags: string[]) =>
-  request<MemoryT>(`/api/memories/${id}`, {
+  request(MemorySchema, `/api/memories/${id}`, {
     method: "PUT",
     body: JSON.stringify({ content, tags }),
   });
 
-export const DeleteMemory = (id: number) =>
-  request<void>(`/api/memories/${id}`, { method: "DELETE" });
+export const DeleteMemory = (id: number) => rawRequest(`/api/memories/${id}`, { method: "DELETE" });
 
 export const GetSessionStats = (projectID: string) => {
   const params = new URLSearchParams();
   if (projectID) params.set("project_id", projectID);
-  return request<SessionStatsT>(`/api/sessions/stats?${params}`);
+  return request(SessionStatsSchema, `/api/sessions/stats?${params}`);
 };
 
 export const Dream = (projectID: string) =>
-  request<DreamResultT>("/api/dream", {
+  request(DreamResultSchema, "/api/dream", {
     method: "POST",
     body: JSON.stringify({ project_id: projectID }),
   });
 
+export const GetDreamStats = (projectID: string, days: number) => {
+  const params = new URLSearchParams();
+  if (projectID) params.set("project_id", projectID);
+  if (days) params.set("days", String(days));
+  return request(DreamStatsSchema, `/api/dream/stats?${params}`);
+};
+
 export const GetMemoryStats = (projectID: string) => {
   const params = new URLSearchParams();
   if (projectID) params.set("project_id", projectID);
-  return request<MemoryStatsT>(`/api/stats?${params}`);
+  return request(MemoryStatsSchema, `/api/stats?${params}`);
 };
 
 export const GetMemoryEventsByDay = (projectID: string, days: number) => {
   const params = new URLSearchParams();
   if (projectID) params.set("project_id", projectID);
   if (days) params.set("days", String(days));
-  return requestList<DailyMemoryEventsT>(`/api/stats/events?${params}`);
+  return requestList(DailyMemoryEventsListSchema, `/api/stats/events?${params}`);
 };
 
 export const GetUsageByDay = (days: number) => {
   const params = new URLSearchParams();
   if (days) params.set("days", String(days));
-  return requestList<DailyUsageT>(`/api/usage/by-day?${params}`);
+  return requestList(DailyUsageListSchema, `/api/usage/by-day?${params}`);
 };
 
 export const GetUsageSummary = (sinceHours: number) => {
   const params = new URLSearchParams();
   if (sinceHours) params.set("since_hours", String(sinceHours));
-  return requestList<UsageBucketT>(`/api/usage/summary?${params}`);
+  return requestList(UsageBucketListSchema, `/api/usage/summary?${params}`);
 };
 
 export const GetMemoryGraph = (projectID: string) => {
   const params = new URLSearchParams();
   if (projectID) params.set("project_id", projectID);
-  return request<MemoryGraphT>(`/api/graph?${params}`);
+  return request(MemoryGraphSchema, `/api/graph?${params}`);
 };
+
+export const GetProjectOverrides = (projectID: string) =>
+  request(ProjectOverridesViewSchema, `/api/projects/${encodeURIComponent(projectID)}/overrides`);
+
+export const SaveProjectOverrides = (
+  projectID: string,
+  repo: ProjectOverridePayload,
+  user: ProjectOverridePayload,
+) =>
+  request(ProjectOverridesViewSchema, `/api/projects/${encodeURIComponent(projectID)}/overrides`, {
+    method: "POST",
+    body: JSON.stringify({ repo, user }),
+  });

@@ -73,6 +73,42 @@ type SessionStatsProvider interface {
 	GetSessionStats(ctx context.Context, projectID string) (SessionStats, error)
 }
 
+// DreamStatsReader aggregates persisted dream-pass results over a window.
+// Powers the "dreaming activity" section of the Stats dashboard.
+type DreamStatsReader interface {
+	DreamStats(ctx context.Context, projectID string, days int) (store.DreamStats, error)
+}
+
+// ProjectOverridesService reads + writes the two-layer per-project override
+// files. Repo layer is committed (.yullu/config.toml); user layer is
+// private ($XDG_CONFIG_HOME/yullu/projects/<id>.toml). The App
+// coordinates both because layer-routing depends on which fields the UI
+// posted.
+type ProjectOverridesService interface {
+	GetProjectOverrides(ctx context.Context, projectID string) (ProjectOverridesView, error)
+	SaveProjectOverrides(ctx context.Context, projectID string, repo, user ProjectOverridePayload) (ProjectOverridesView, error)
+}
+
+// MessageRecorder is the non-MCP entry point into the session_messages
+// buffer. Used by POST /api/messages so external hooks (Claude Code Stop
+// hook, etc.) can append turns without speaking MCP JSON-RPC. Returns the
+// resolved project_id so the client can verify which scope the messages
+// landed in.
+type MessageRecorder interface {
+	RecordMessages(
+		ctx context.Context,
+		projectOverride, sessionID string,
+		msgs []RecordedMessage,
+	) (string, error)
+}
+
+// RecordedMessage is one user/assistant turn. role must be "user" or
+// "assistant"; content is the rendered text of the turn.
+type RecordedMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
 // Dreamer runs a single dream pass - extracting durable memories from the
 // recorded session_messages buffer. The App's Dream method is what wires
 // in the configured ContextMemories and reasoner.
