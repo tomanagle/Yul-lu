@@ -1,0 +1,26 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+entrypoint = "./tmp/yullu"
+cmd = "go build -tags sqlite_fts5 -o ./tmp/yullu ."
+delay = 500
+exclude_dir = ["bin", "tmp", "testdata"]
+exclude_regex = ["_test\\.go$"]
+exclude_file = []
+include_ext = ["go", "toml"]
+kill_delay = "500ms"
+log = "build-errors.log"
+send_interrupt = true
+stop_on_error = false
+
+[log]
+main_only = false
+time = true
+
+[misc]
+clean_on_exit = true
+
+[screen]
+clear_on_rebuild = false
+keep_scroll = true

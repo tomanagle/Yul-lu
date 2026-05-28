@@ -1,0 +1,30 @@
+[embedding]
+  provider = "openai"
+  model = ""
+
+[reasoning]
+  provider = "openai"
+  model = ""
+
+[openai]
+  api_key = ""
+
+[anthropic]
+  api_key = ""
+
+[voyage]
+  api_key = ""
+
+[sync]
+  enabled = true
+  dir = ".yullu"
+  log_embeddings = true
+  reuse_embeddings = true
+  auto_reconcile_on_startup = true
+
+[dreaming]
+  enabled = true
+  interval = "30m"
+  min_messages = 10
+  context_memories = 50
+  on_idle_seconds = 0

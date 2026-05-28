@@ -1,0 +1,10 @@
+bin/
+tmp/
+build-errors.log
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.DS_Store
+frontend/node_modules/
+frontend/dist/

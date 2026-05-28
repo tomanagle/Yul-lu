@@ -1,0 +1,128 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Yul'lu - night indigo + dream violet on dark.
+ *
+ * Palette source: ui-ux-pro-max "Sleep Tracker" - picked deliberately to
+ * lean into the dolphin/dream/memory metaphor (Yul'lu is the Butchella
+ * word for bottlenose dolphins). Indigo carries the night/dream weight;
+ * violet is the accent that catches the eye without going neon.
+ *
+ * All tokens are HSL so shadcn/ui's existing `hsl(var(--x))` references
+ * pick them up without changes. Dark-only - there's no light theme yet,
+ * and the design system the palette comes from is explicitly Dark Mode OLED.
+ */
+@layer base {
+  :root {
+    /* Surfaces - deep navy with a touch of indigo at higher elevations */
+    --background: 222 47% 11%;        /* #0F172A */
+    --foreground: 210 40% 96%;        /* #F1F5F9 - high-contrast slate */
+    --card: 222 35% 15%;              /* #192134 */
+    --card-foreground: 210 40% 96%;
+    --popover: 222 35% 15%;
+    --popover-foreground: 210 40% 96%;
+
+    /* Primary = indigo (the night). Use for active states + key brand surfaces. */
+    --primary: 244 76% 51%;           /* #4338CA */
+    --primary-foreground: 210 40% 98%;
+
+    /* Secondary = muted indigo surface for chips, secondary buttons */
+    --secondary: 232 28% 22%;
+    --secondary-foreground: 210 40% 96%;
+
+    /* Muted = barely-visible purple tint, used for hover / inset surfaces */
+    --muted: 232 49% 14%;             /* #131936 */
+    --muted-foreground: 215 20% 65%;  /* #94A3B8 - slate-400 */
+
+    /* Accent = dream violet. Reserve for highlights, recall-counts, halos. */
+    --accent: 263 84% 58%;            /* #7C3AED */
+    --accent-foreground: 210 40% 98%;
+
+    /* Destructive - kept the warm red */
+    --destructive: 0 73% 50%;
+    --destructive-foreground: 210 40% 98%;
+
+    /* Borders / inputs - very low opacity over the dark surfaces */
+    --border: 232 18% 24%;
+    --input: 232 18% 24%;
+
+    /* Focus ring uses primary indigo so the glow reads as "live" */
+    --ring: 244 76% 51%;
+
+    --radius: 0.625rem;
+
+    /* Glow used by focus rings + the active sidebar accent. Soft, low spread. */
+    --glow-indigo: 0 0 0 1px hsl(244 76% 51% / 0.5),
+                   0 0 18px -2px hsl(244 76% 51% / 0.35);
+    --glow-violet: 0 0 0 1px hsl(263 84% 58% / 0.4),
+                   0 0 24px -4px hsl(263 84% 58% / 0.35);
+  }
+
+  html, body, #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-feature-settings: 'cv11', 'ss01', 'ss03';
+    /*
+     * Ambient gradient: a very subtle indigo-violet glow that sits behind the
+     * whole app, brightest near the top-center and fading to nothing by the
+     * fold. It's the only "mystical" flourish - anything more would tip into
+     * kitsch. Pure radial-gradients on a fixed background are cheap (no
+     * paint cost beyond first layout).
+     */
+    background-image:
+      radial-gradient(60rem 30rem at 50% -10rem, hsl(244 76% 51% / 0.18), transparent 60%),
+      radial-gradient(40rem 30rem at 90% 0, hsl(263 84% 58% / 0.10), transparent 70%);
+    background-attachment: fixed;
+  }
+
+  /* Disciplined type rhythm - sizes mirror the "Modern Dark Cinema" Inter
+     system: tighter tracking on larger sizes, looser on labels. */
+  h1, h2, h3, h4 {
+    font-weight: 600;
+    letter-spacing: -0.015em;
+  }
+  .yullu-display {
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    font-variant-numeric: tabular-nums;
+  }
+  .yullu-label {
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    font-size: 0.6875rem;
+  }
+  /* Tabular numerals on stat numbers so digit changes don't shift layout. */
+  .yullu-tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+@layer utilities {
+  .yullu-ring-indigo {
+    box-shadow: var(--glow-indigo);
+  }
+  .yullu-ring-violet {
+    box-shadow: var(--glow-violet);
+  }
+  /* Used on the active sidebar item - a slim violet bar pinned to the left. */
+  .yullu-active-rail::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 6px;
+    bottom: 6px;
+    width: 2px;
+    border-radius: 2px;
+    background: hsl(var(--accent));
+    box-shadow: 0 0 12px hsl(var(--accent) / 0.6);
+  }
+}
