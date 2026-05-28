@@ -8,3 +8,7 @@ build-errors.log
 .DS_Store
 frontend/node_modules/
 frontend/dist/
+
+# Local user config holds API keys; yullu regenerates a blank default on
+# first run if missing. Never commit the working copy.
+config.toml
