@@ -128,7 +128,7 @@ smoke: build ## Round-trip initialize + tools/list over stdio (no API key needed
 # Quality
 # ---------------------------------------------------------------------------
 
-test: ## Run unit tests
+test: ensure-dist ## Run unit tests (depends on dist existing so //go:embed resolves)
 	go test -tags $(GO_TAGS) ./...
 
 tidy: ## go mod tidy

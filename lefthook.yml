@@ -1,0 +1,51 @@
+# Lefthook config: auto-fix formatting + linting on commit. CI (in
+# .github/workflows/ci.yml) re-runs the same checks in --check mode so a
+# stale hook install can't sneak an unformatted commit past review.
+#
+# One-time setup for contributors:
+#   brew install lefthook            # or: go install github.com/evilmartians/lefthook
+#   lefthook install                 # wires git hooks for this repo
+#
+# Hooks run only on STAGED files (the {staged_files} variable below), so
+# unrelated dirty files in the working tree are untouched. `stage_fixed:
+# true` re-adds any files the formatter touched, so the commit you wrote
+# is the commit that lands.
+
+pre-commit:
+  parallel: true
+  commands:
+    # ---- Frontend: oxlint with --fix ---------------------------------------
+    # oxlint surfaces real bugs (unused imports, missing keys, etc.). The
+    # --fix flag handles the auto-fixable ones; whatever's left must be
+    # resolved manually before the commit can complete (the hook exits
+    # non-zero on residual errors).
+    frontend-lint:
+      root: "frontend/"
+      glob: "*.{ts,tsx,js,jsx}"
+      run: bun run lint:fix {staged_files}
+      stage_fixed: true
+
+    # ---- Frontend: oxfmt -----------------------------------------------------
+    # Auto-formats every covered file type. Same {staged_files} restriction
+    # so we don't reformat the world on every commit.
+    frontend-fmt:
+      root: "frontend/"
+      glob: "*.{ts,tsx,js,jsx,css,html,json}"
+      run: bun run fmt {staged_files}
+      stage_fixed: true
+
+    # ---- Go: make fmt --------------------------------------------------------
+    # Defers to the Makefile target (`gofmt -s -w .`) so the canonical
+    # formatting rule lives in one place. The glob gate ensures the
+    # command only fires when Go files are actually staged. `stage_fixed`
+    # re-adds any STAGED files the formatter touched; unrelated files
+    # `gofmt` reformats in the working tree stay dirty (the contributor
+    # can commit them separately).
+    go-fmt:
+      glob: "*.go"
+      run: make fmt
+      stage_fixed: true
+
+# pre-push could also run `make vet` for a faster local feedback than
+# waiting for CI, but vet hits cgo + sqlite-vec compile and can take a
+# few seconds — keep it out of the hot path. CI catches it.

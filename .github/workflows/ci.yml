@@ -1,0 +1,70 @@
+# CI runs on every PR that targets master. Two independent jobs so a Go
+# vet failure doesn't mask a lint failure (and vice versa). Anything that
+# can be auto-fixed locally via lefthook should fail here — that's the
+# point of the dual setup.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  # Also run on direct pushes to main so the badge reflects the head
+  # commit even when a PR was force-merged.
+  push:
+    branches: [main]
+
+# Cancel superseded runs on the same branch so a fast-follow push doesn't
+# pile up CI time.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend (oxlint + oxfmt)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install deps
+        run: bun install --frozen-lockfile
+
+      - name: Lint (oxlint)
+        run: bun run lint
+
+      - name: Format check (oxfmt)
+        # fmt:check fails non-zero if any file would be reformatted. Locally,
+        # `bun run fmt` (or `lefthook run pre-commit`) fixes it.
+        run: bun run fmt:check
+
+  go:
+    name: Go vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The Go binary uses //go:embed all:frontend/dist, so vet/test need
+      # the directory to exist (contents don't matter, just presence).
+      # `make vet` and `make test` both depend on `ensure-dist`, which
+      # writes a placeholder.
+      - name: go vet
+        run: make vet
+
+      # Run the full Go test suite. Vet first so a syntax error fails
+      # fast and the test output isn't drowned out by vet errors.
+      - name: go test
+        run: make test
