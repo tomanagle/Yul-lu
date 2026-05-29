@@ -1,15 +1,42 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Check, Pencil, RefreshCw, Search, Trash2, X } from "lucide-react";
 
 import { useDeleteMemory, useMemories, useRetry, useStatus, useUpdateMemory } from "@/lib/queries";
 import { useProjectScope } from "@/lib/project-scope";
 import { relativeTime, shortUUID } from "@/lib/format";
+import type { Memory, MemoryCategory } from "@/lib/schemas";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
+
+// Display order for the category sections. Matches the SKILL.md ordering
+// so users see categories laid out the same way the agent reasons about
+// them. "uncategorised" is a sentinel for memories with no category set —
+// rendered last so it doesn't compete with the named sections.
+const CATEGORY_ORDER: (MemoryCategory | "uncategorised")[] = [
+  "process",
+  "decision",
+  "gotcha",
+  "domain",
+  "style",
+  "uncategorised",
+];
+
+// One-line definitions shown under each section header so a user
+// reviewing the dashboard learns the categories without leaving the
+// page. Kept short — full definitions live in SKILL.md.
+const CATEGORY_BLURB: Record<MemoryCategory | "uncategorised", string> = {
+  process: "How to do things in this repo — commands, conventions, layout.",
+  decision: "Why we made the choices we made.",
+  gotcha: "What bites — non-obvious constraints, API quirks, must-always rules.",
+  domain: "What words mean here — terms, invariants, semantics.",
+  style: "Visual language — UI patterns, copy tone, layout density.",
+  uncategorised: "Memories awaiting classification. Rate or edit to assign a category.",
+};
 
 export function MemoriesPage() {
   const navigate = useNavigate();
@@ -17,6 +44,9 @@ export function MemoriesPage() {
   // Project is sidebar-owned. Empty = all projects.
   const { project } = useProjectScope();
   const [filter, setFilter] = useState("");
+  // null = "All" — show every category sectioned. A specific category
+  // collapses the view to that one section.
+  const [activeCategory, setActiveCategory] = useState<MemoryCategory | "uncategorised" | null>(null);
 
   // The backend handles search via SQLite FTS5 (BM25-ranked, free).
   // Passing a non-empty filter switches useMemories from List to Search.
@@ -26,11 +56,23 @@ export function MemoriesPage() {
 
   const results = memoriesQuery.data ?? [];
 
+  // Pre-bucket results by category once per render. Memo'd to avoid
+  // re-shuffling on every keystroke when the user is just typing in the
+  // filter box (which already refetches via the query).
+  const grouped = useMemo(() => groupByCategory(results), [results]);
+
   if (status && !status.ready) {
     return <SetupCard status={status} onOpenSettings={() => navigate({ to: "/settings" })} />;
   }
 
   const showingCount = results.length;
+  // Sections to render. When a specific category is active, restrict
+  // to just that one (and only if it has entries — otherwise empty
+  // state below handles the message).
+  const visibleSections = CATEGORY_ORDER.filter((c) => {
+    if (activeCategory !== null && c !== activeCategory) return false;
+    return (grouped[c]?.length ?? 0) > 0;
+  });
 
   return (
     <div className="space-y-4">
@@ -39,6 +81,12 @@ export function MemoriesPage() {
         onFilterChange={setFilter}
         loading={memoriesQuery.isFetching}
         onRefresh={() => memoriesQuery.refetch()}
+      />
+
+      <CategoryFilterPills
+        active={activeCategory}
+        onChange={setActiveCategory}
+        counts={grouped}
       />
 
       <div className="flex items-center justify-between text-xs text-muted-foreground">
@@ -70,21 +118,128 @@ export function MemoriesPage() {
           No memories match “{filter}”.
         </p>
       )}
+      {!memoriesQuery.isLoading && showingCount > 0 && visibleSections.length === 0 && (
+        <p className="py-8 text-center text-sm text-muted-foreground">
+          No memories in this category.
+        </p>
+      )}
 
-      <ul className="space-y-3">
-        {results.map((m) => (
-          <li key={m.id}>
-            <MemoryCard
-              memory={m}
-              isSaving={updateMemory.isPending && updateMemory.variables?.id === m.id}
-              onSave={(content, tags) => updateMemory.mutateAsync({ id: m.id, content, tags })}
-              onDelete={() => {
-                if (confirm("Delete this memory?")) deleteMemory.mutate(m.id);
-              }}
+      <div className="space-y-6">
+        {visibleSections.map((category) => (
+          <section key={category} className="space-y-3">
+            <CategorySectionHeader
+              category={category}
+              count={grouped[category]?.length ?? 0}
             />
-          </li>
+            <ul className="space-y-3">
+              {grouped[category]!.map((m) => (
+                <li key={m.id}>
+                  <MemoryCard
+                    memory={m}
+                    isSaving={updateMemory.isPending && updateMemory.variables?.id === m.id}
+                    onSave={(content, tags) => updateMemory.mutateAsync({ id: m.id, content, tags })}
+                    onDelete={() => {
+                      if (confirm("Delete this memory?")) deleteMemory.mutate(m.id);
+                    }}
+                  />
+                </li>
+              ))}
+            </ul>
+          </section>
         ))}
-      </ul>
+      </div>
+    </div>
+  );
+}
+
+// groupByCategory partitions a flat list into the five category buckets
+// plus an "uncategorised" bucket. Returns a plain object keyed by category
+// so the render side can index by the section key without optional chains
+// scattered everywhere.
+function groupByCategory(memories: Memory[]): Record<MemoryCategory | "uncategorised", Memory[]> {
+  const buckets: Record<MemoryCategory | "uncategorised", Memory[]> = {
+    process: [],
+    decision: [],
+    gotcha: [],
+    domain: [],
+    style: [],
+    uncategorised: [],
+  };
+  for (const m of memories) {
+    const key = (m.category ?? "uncategorised") as MemoryCategory | "uncategorised";
+    if (buckets[key]) buckets[key].push(m);
+    else buckets.uncategorised.push(m);
+  }
+  return buckets;
+}
+
+function CategoryFilterPills({
+  active,
+  onChange,
+  counts,
+}: {
+  active: MemoryCategory | "uncategorised" | null;
+  onChange: (v: MemoryCategory | "uncategorised" | null) => void;
+  counts: Record<MemoryCategory | "uncategorised", Memory[]>;
+}) {
+  const total = Object.values(counts).reduce((acc, arr) => acc + arr.length, 0);
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <Pill active={active === null} onClick={() => onChange(null)}>
+        All <span className="ml-1 text-muted-foreground">{total}</span>
+      </Pill>
+      {CATEGORY_ORDER.map((c) => {
+        const n = counts[c]?.length ?? 0;
+        if (n === 0) return null;
+        return (
+          <Pill key={c} active={active === c} onClick={() => onChange(c)}>
+            {c} <span className="ml-1 text-muted-foreground">{n}</span>
+          </Pill>
+        );
+      })}
+    </div>
+  );
+}
+
+function Pill({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "rounded-full border px-3 py-1 text-xs transition-colors",
+        active
+          ? "border-primary bg-primary/10 text-foreground"
+          : "border-border/40 text-muted-foreground hover:border-border hover:text-foreground",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+function CategorySectionHeader({
+  category,
+  count,
+}: {
+  category: MemoryCategory | "uncategorised";
+  count: number;
+}) {
+  return (
+    <div className="flex items-baseline gap-2 border-b border-border/40 pb-1.5">
+      <h2 className="text-sm font-medium capitalize text-foreground">{category}</h2>
+      <span className="text-xs text-muted-foreground">{count}</span>
+      <span className="ml-2 truncate text-[11px] text-muted-foreground/80">
+        {CATEGORY_BLURB[category]}
+      </span>
     </div>
   );
 }
@@ -127,6 +282,7 @@ type MemoryShape = {
   tags?: string[];
   created_at: string;
   updated_at: string;
+  category?: MemoryCategory;
 };
 
 function MemoryCard({
@@ -187,9 +343,14 @@ function MemoryCard({
           </div>
         </div>
 
-        {(memory.tags ?? []).length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
-            {memory.tags!.map((t) => (
+        {(memory.category || (memory.tags ?? []).length > 0) && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {memory.category && (
+              <Badge variant="outline" className="border-primary/40 text-primary/90">
+                {memory.category}
+              </Badge>
+            )}
+            {(memory.tags ?? []).map((t) => (
               <Badge key={t} variant="secondary">
                 {t}
               </Badge>

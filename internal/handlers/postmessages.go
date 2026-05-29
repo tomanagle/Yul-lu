@@ -16,7 +16,9 @@ var errSessionRequired = errors.New("session_id is required")
 //	{
 //	  "session_id": "string",
 //	  "project_id": "optional override",
-//	  "messages": [{ "role": "user" | "assistant", "content": "..." }]
+//	  "cwd":        "optional caller cwd — required if no project_id, since
+//	                 the server runs in its own dir and can't see the user's",
+//	  "messages":   [{ "role": "user" | "assistant", "content": "..." }]
 //	}
 //
 // Response echoes the resolved project_id and the count of messages
@@ -39,6 +41,7 @@ func (h *PostMessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	var body struct {
 		SessionID string            `json:"session_id"`
 		ProjectID string            `json:"project_id"`
+		Cwd       string            `json:"cwd"`
 		Messages  []RecordedMessage `json:"messages"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -54,7 +57,7 @@ func (h *PostMessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	projectID, err := h.recorder.RecordMessages(
-		r.Context(), body.ProjectID, body.SessionID, body.Messages,
+		r.Context(), body.ProjectID, body.Cwd, body.SessionID, body.Messages,
 	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)

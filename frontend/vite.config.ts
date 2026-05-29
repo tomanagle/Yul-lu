@@ -19,6 +19,10 @@ export default defineConfig({
   server: {
     port: 47824,
     strictPort: true,
+    // Pop the dev dashboard in the default browser once vite is listening.
+    // `make dev` (and a bare `bun run dev`) both rely on this — vite waits
+    // until the server is actually ready, so there's no connect-refused race.
+    open: true,
     proxy: {
       "/api": "http://localhost:47823",
       "/mcp": "http://localhost:47823",

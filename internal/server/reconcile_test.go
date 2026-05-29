@@ -104,10 +104,10 @@ func publishCreate(t *testing.T, srv *Server, st *store.Store, projectID, conten
 	}
 	memUUID := uuid.NewString()
 	vectors := map[string][]float32{srv.embedder.ID(): vecs[0]}
-	if err := srv.writer.Write(memlog.NewCreateEvent(memUUID, content, tags, vectors)); err != nil {
+	if err := srv.writer.Write(memlog.NewRememberEvent(memUUID, content, tags, vectors)); err != nil {
 		t.Fatalf("write create event: %v", err)
 	}
-	id, err := st.Insert(ctx, memUUID, projectID, content, tags, vecs[0])
+	id, err := st.Insert(ctx, memUUID, projectID, content, tags, vecs[0], "")
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestSyncRoundTrip(t *testing.T) {
 		t.Fatalf("A embed update: %v", err)
 	}
 	updateVectors := map[string][]float32{embA.ID(): newVecs[0]}
-	if err := srvA.writer.Write(memlog.NewUpdateEvent(memUUID, &newContent, nil, updateVectors)); err != nil {
+	if err := srvA.writer.Write(memlog.NewReviseEvent(memUUID, &newContent, nil, updateVectors)); err != nil {
 		t.Fatalf("write update event: %v", err)
 	}
 	if err := stA.Update(ctx, idA, &newContent, nil, newVecs[0]); err != nil {
@@ -213,7 +213,7 @@ func TestSyncRoundTrip(t *testing.T) {
 	}
 
 	// --- A deletes; B sees the row disappear. ---
-	if err := srvA.writer.Write(memlog.NewDeleteEvent(memUUID)); err != nil {
+	if err := srvA.writer.Write(memlog.NewForgetEvent(memUUID)); err != nil {
 		t.Fatalf("write delete event: %v", err)
 	}
 	if err := stA.Delete(ctx, idA); err != nil {
@@ -283,7 +283,7 @@ func TestSyncCrossModelTriggersLocalEmbed(t *testing.T) {
 	for _, e := range entries {
 		ev := e.Event
 		// Vector-only update events have no content but a vectors map.
-		if ev.Type != memlog.EventUpdate || ev.MemoryID != memUUID || ev.Content != nil || ev.Vectors == nil {
+		if ev.Type != memlog.EventRevise || ev.MemoryID != memUUID || ev.Content != nil || ev.Vectors == nil {
 			continue
 		}
 		if _, ok := ev.Vectors["ollama:other"]; ok {

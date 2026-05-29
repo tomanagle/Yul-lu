@@ -12,6 +12,7 @@ import (
 	mcpsrv "github.com/mark3labs/mcp-go/server"
 
 	"github.com/tomanagle/yullu/internal/ai"
+	"github.com/tomanagle/yullu/internal/config"
 	"github.com/tomanagle/yullu/internal/scope"
 	"github.com/tomanagle/yullu/internal/store"
 )
@@ -28,6 +29,123 @@ type DreamResult struct {
 	Sessions          []DreamSession `json:"sessions,omitempty"`
 	Errors            []string       `json:"errors,omitempty"`
 	Skipped           bool           `json:"skipped,omitempty"`
+}
+
+// DreamProgress is a live snapshot of the in-flight dream pass (or the
+// last one to finish, when Running=false). The UI polls it to render a
+// "Dreaming…" indicator with phase + counters, AND to show "next pass
+// in N minutes" / "idle trigger fires when buffer goes quiet for N
+// seconds" derived from the scheduler config.
+type DreamProgress struct {
+	Running           bool      `json:"running"`
+	ProjectID         string    `json:"project_id,omitempty"`
+	Phase             string    `json:"phase,omitempty"`              // "starting" | "session" | "idle"
+	StartedAt         time.Time `json:"started_at,omitzero"`
+	FinishedAt        time.Time `json:"finished_at,omitzero"`
+	TotalSessions     int       `json:"total_sessions"`               // sessions enqueued for this pass
+	CompletedSessions int       `json:"completed_sessions"`           // sessions finished so far
+	CurrentSessionID  string    `json:"current_session_id,omitempty"` // the session being reasoned about right now
+	MessagesProcessed int       `json:"messages_processed"`
+	OpsCreated        int       `json:"ops_created"`
+	OpsUpdated        int       `json:"ops_updated"`
+	OpsDeleted        int       `json:"ops_deleted"`
+	OpsSkipped        int       `json:"ops_skipped"`
+	LastError         string    `json:"last_error,omitempty"`
+
+	// Scheduler-derived fields. Computed on every snapshot read.
+	// SchedulerEnabled is false when [dreaming].enabled is false in the
+	// effective config — in that case nothing fires automatically and
+	// NextAt is zero.
+	SchedulerEnabled  bool          `json:"scheduler_enabled"`
+	IntervalSeconds   int           `json:"interval_seconds"`
+	OnIdleSeconds     int           `json:"on_idle_seconds"`
+	LastMessageAt     time.Time     `json:"last_message_at,omitzero"`
+	LastScheduledAt   time.Time     `json:"last_scheduled_at,omitzero"`
+	NextIntervalAt    time.Time     `json:"next_interval_at,omitzero"`
+	NextIdleAt        time.Time     `json:"next_idle_at,omitzero"`
+	// NextAt is the soonest of the two triggers, or zero if neither will
+	// fire (scheduler disabled, no buffered messages, etc.). NextReason
+	// names which trigger wins: "interval" or "idle".
+	NextAt     time.Time `json:"next_at,omitzero"`
+	NextReason string    `json:"next_reason,omitempty"`
+}
+
+// DreamProgressSnapshot returns the latest DreamProgress safely (a copy
+// under the lock — never a pointer to the live struct). Scheduler-derived
+// fields are computed fresh on every read so the UI countdown stays
+// accurate without us having to wake the scheduler.
+func (s *Server) DreamProgressSnapshot() DreamProgress {
+	s.dreamProgressMu.Lock()
+	snap := s.dreamProgress
+	s.dreamProgressMu.Unlock()
+
+	// Resolve the effective config for whichever project the progress
+	// snapshot is for (or the global default when ProjectID is empty,
+	// e.g. before the first pass).
+	cfg := s.resolveProject(snap.ProjectID).Dreaming
+	snap.SchedulerEnabled = cfg.Enabled
+	interval := cfg.IntervalDuration()
+	snap.IntervalSeconds = int(interval.Seconds())
+	snap.OnIdleSeconds = cfg.OnIdleSeconds
+
+	s.dreamStateMu.Lock()
+	lastMsg := s.lastMessageRecordedAt
+	s.dreamStateMu.Unlock()
+	snap.LastMessageAt = lastMsg
+
+	s.lastScheduledDreamAtMu.Lock()
+	lastSched := s.lastScheduledDreamAt[snap.ProjectID]
+	s.lastScheduledDreamAtMu.Unlock()
+	snap.LastScheduledAt = lastSched
+
+	if !cfg.Enabled {
+		return snap
+	}
+
+	now := time.Now()
+	// Time trigger: next interval after lastSched (or now if lastSched is
+	// zero — first iteration fires promptly).
+	if interval > 0 {
+		if lastSched.IsZero() {
+			snap.NextIntervalAt = now
+		} else {
+			snap.NextIntervalAt = lastSched.Add(interval)
+		}
+	}
+	// Idle trigger: lastMsg + onIdle, but only meaningful when there's
+	// actually been a message recorded since boot. Don't bother checking
+	// buffer presence here — the UI shouldn't promise idle-firing if the
+	// scheduler will skip the pre-check, but we'd need to hit the DB to
+	// know, and this snapshot is meant to be cheap. The UI can just say
+	// "idle trigger at X if messages still pending".
+	if cfg.OnIdleSeconds > 0 && !lastMsg.IsZero() {
+		snap.NextIdleAt = lastMsg.Add(time.Duration(cfg.OnIdleSeconds) * time.Second)
+	}
+
+	// Pick the soonest non-zero trigger as the headline NextAt.
+	switch {
+	case !snap.NextIntervalAt.IsZero() && !snap.NextIdleAt.IsZero():
+		if snap.NextIntervalAt.Before(snap.NextIdleAt) {
+			snap.NextAt = snap.NextIntervalAt
+			snap.NextReason = "interval"
+		} else {
+			snap.NextAt = snap.NextIdleAt
+			snap.NextReason = "idle"
+		}
+	case !snap.NextIntervalAt.IsZero():
+		snap.NextAt = snap.NextIntervalAt
+		snap.NextReason = "interval"
+	case !snap.NextIdleAt.IsZero():
+		snap.NextAt = snap.NextIdleAt
+		snap.NextReason = "idle"
+	}
+	return snap
+}
+
+func (s *Server) progressUpdate(mut func(*DreamProgress)) {
+	s.dreamProgressMu.Lock()
+	defer s.dreamProgressMu.Unlock()
+	mut(&s.dreamProgress)
 }
 
 // DreamSession is one session's result inside a dream pass.
@@ -85,8 +203,30 @@ func (s *Server) Dream(ctx context.Context, opts DreamOptions) (*DreamResult, er
 	}
 	res := &DreamResult{ProjectID: projectID}
 
+	startedAt := time.Now()
+	s.progressUpdate(func(p *DreamProgress) {
+		*p = DreamProgress{
+			Running:   true,
+			ProjectID: projectID,
+			Phase:     "starting",
+			StartedAt: startedAt,
+		}
+	})
+	// Mark idle on every return path — Phase="idle", Running=false. The
+	// counters and last error stay populated so the UI can show "last pass
+	// finished N seconds ago: created X, updated Y" without a second call.
+	defer func() {
+		s.progressUpdate(func(p *DreamProgress) {
+			p.Running = false
+			p.Phase = "idle"
+			p.CurrentSessionID = ""
+			p.FinishedAt = time.Now()
+		})
+	}()
+
 	sessionIDs, err := s.store.SessionsWithMessages(ctx, projectID, opts.MinMessages)
 	if err != nil {
+		s.progressUpdate(func(p *DreamProgress) { p.LastError = err.Error() })
 		return nil, fmt.Errorf("list sessions: %w", err)
 	}
 	if opts.SessionFilter != "" {
@@ -111,10 +251,26 @@ func (s *Server) Dream(ctx context.Context, opts DreamOptions) (*DreamResult, er
 		return nil, fmt.Errorf("load context memories: %w", err)
 	}
 
+	// Anti-examples for the prompt. Up to 5 most recent user-rejected
+	// memories per project; if the load errors we just dream without
+	// them (best-effort feedback signal, never blocking).
+	rejected, _ := s.store.RecentRejected(ctx, projectID, 5)
+
+	s.progressUpdate(func(p *DreamProgress) {
+		p.TotalSessions = len(sessionIDs)
+	})
 	for _, sid := range sessionIDs {
-		sessRes, err := s.dreamSession(ctx, projectID, sid, memories)
+		s.progressUpdate(func(p *DreamProgress) {
+			p.Phase = "session"
+			p.CurrentSessionID = sid
+		})
+		sessRes, err := s.dreamSession(ctx, projectID, sid, memories, rejected)
 		if err != nil {
 			res.Errors = append(res.Errors, fmt.Sprintf("session %s: %v", sid, err))
+			s.progressUpdate(func(p *DreamProgress) {
+				p.LastError = fmt.Sprintf("session %s: %v", sid, err)
+				p.CompletedSessions++
+			})
 			continue
 		}
 		res.Sessions = append(res.Sessions, sessRes)
@@ -124,6 +280,14 @@ func (s *Server) Dream(ctx context.Context, opts DreamOptions) (*DreamResult, er
 		res.OpsUpdated += sessRes.OpsUpdated
 		res.OpsDeleted += sessRes.OpsDeleted
 		res.OpsSkipped += sessRes.OpsSkipped
+		s.progressUpdate(func(p *DreamProgress) {
+			p.CompletedSessions++
+			p.MessagesProcessed += sessRes.MessagesProcessed
+			p.OpsCreated += sessRes.OpsCreated
+			p.OpsUpdated += sessRes.OpsUpdated
+			p.OpsDeleted += sessRes.OpsDeleted
+			p.OpsSkipped += sessRes.OpsSkipped
+		})
 	}
 
 	// Persist the pass for the Stats dashboard. Only non-skipped passes go
@@ -142,12 +306,12 @@ func (s *Server) Dream(ctx context.Context, opts DreamOptions) (*DreamResult, er
 	return res, nil
 }
 
-// dreamSession dreams one session: builds the prompt, calls the reasoner,
+// (continues) dreamSession dreams one session: builds the prompt, calls the reasoner,
 // parses ops, applies them, then deletes the processed message rows.
-func (s *Server) dreamSession(ctx context.Context, projectID, sessionID string, memories []store.Memory) (DreamSession, error) {
+func (s *Server) dreamSession(ctx context.Context, projectID, sessionID string, memories []store.Memory, rejected []store.RejectedMemory) (DreamSession, error) {
 	res := DreamSession{SessionID: sessionID}
 
-	msgs, err := s.store.SessionMessages(ctx, sessionID)
+	msgs, err := s.store.SessionMessages(ctx, projectID, sessionID)
 	if err != nil {
 		return res, fmt.Errorf("load messages: %w", err)
 	}
@@ -156,8 +320,12 @@ func (s *Server) dreamSession(ctx context.Context, projectID, sessionID string, 
 	}
 	res.MessagesProcessed = len(msgs)
 
-	prompt := buildDreamUserPrompt(memories, msgs)
-	raw, err := s.callReasoner(ctx, dreamSystemPrompt, prompt, 4000)
+	prompt := buildDreamUserPrompt(projectID, memories, msgs, rejected)
+	// DreamPromptForReasoner concatenates the user-editable body with the
+	// locked OUTPUT FORMAT contract — parseDreamResponse depends on that
+	// JSON shape, so it's never part of the editable prompt.
+	systemPrompt := config.DreamPromptForReasoner()
+	raw, err := s.callReasoner(ctx, systemPrompt, prompt, 4000)
 	if err != nil {
 		return res, fmt.Errorf("reasoner: %w", err)
 	}
@@ -216,7 +384,7 @@ func (s *Server) applyDreamOp(ctx context.Context, projectID string, op dreamOp,
 		if op.Tags != nil {
 			tags = *op.Tags
 		}
-		uuid, _, err := s.createMemory(ctx, projectID, op.Content, tags)
+		uuid, _, err := s.createMemory(ctx, projectID, op.Content, tags, store.MemoryCategory(op.Category))
 		if err != nil {
 			s.logger.Warn("dream create failed", "err", err.Error())
 			res.OpsSkipped++
@@ -264,23 +432,28 @@ func (s *Server) applyDreamOp(ctx context.Context, projectID string, op dreamOp,
 	}
 }
 
-// StartScheduler spawns the background dream loop. Returns immediately if
-// dreaming is disabled. The goroutine exits when ctx is cancelled.
+// StartScheduler spawns the background dream loop. The scheduler always
+// starts — per-project gating happens inside scheduleTick, which reads
+// each project's effective config. Previously this short-circuited when
+// the GLOBAL [dreaming].enabled was off, which meant a per-project
+// override of dreaming.enabled = true was silently ignored.
 //
 // Strategy: a single ticker polls on a short cadence (capped at 5s) and
-// fires Dream when either (a) interval has elapsed since the last dream
-// or (b) record_messages has been quiet for on_idle_seconds and there are
-// unprocessed messages. The single-flight lock inside Dream means the
-// scheduler can't collide with dream_now.
+// for each project with buffered messages, fires Dream when either
+// (a) interval has elapsed since the last dream for THAT project or
+// (b) record_messages has been quiet for on_idle_seconds. The
+// single-flight lock inside Dream means the scheduler can't collide
+// with dream_now.
+//
+// Poll cadence comes from the global config — it bounds responsiveness
+// for new pending projects, not per-project firing. Per-project
+// interval/idle are read fresh inside scheduleTick.
 func (s *Server) StartScheduler(ctx context.Context) {
-	if !s.cfg.Dreaming.Enabled {
-		return
-	}
 	interval := s.cfg.Dreaming.IntervalDuration()
 	idle := time.Duration(s.cfg.Dreaming.OnIdleSeconds) * time.Second
 
 	poll := 5 * time.Second
-	if interval < poll {
+	if interval > 0 && interval < poll {
 		poll = interval
 	}
 	if idle > 0 && idle < poll {
@@ -290,18 +463,23 @@ func (s *Server) StartScheduler(ctx context.Context) {
 		poll = time.Second
 	}
 	s.logger.Info("dream scheduler started",
-		"interval", interval.String(),
-		"min_messages", s.cfg.Dreaming.MinMessages,
-		"on_idle_seconds", s.cfg.Dreaming.OnIdleSeconds,
+		"global_interval", interval.String(),
+		"global_min_messages", s.cfg.Dreaming.MinMessages,
+		"global_on_idle_seconds", s.cfg.Dreaming.OnIdleSeconds,
+		"global_enabled", s.cfg.Dreaming.Enabled,
 		"poll", poll.String(),
 	)
-	go s.runScheduler(ctx, interval, idle, poll)
+	go s.runScheduler(ctx, poll)
 }
 
-func (s *Server) runScheduler(ctx context.Context, interval, idle, poll time.Duration) {
+// runScheduler polls every project with buffered messages and delegates
+// to scheduleTick. The interval / idle thresholds used to live in the
+// scheduler's local state but are now read per-project from each
+// project's effective config inside scheduleTick — the scheduler itself
+// only needs the poll cadence.
+func (s *Server) runScheduler(ctx context.Context, poll time.Duration) {
 	ticker := time.NewTicker(poll)
 	defer ticker.Stop()
-	lastDream := time.Time{}
 
 	for {
 		select {
@@ -309,72 +487,108 @@ func (s *Server) runScheduler(ctx context.Context, interval, idle, poll time.Dur
 			s.logger.Info("dream scheduler stopping")
 			return
 		case now := <-ticker.C:
-			if s.shouldDream(ctx, now, lastDream, interval, idle) {
-				s.runScheduledDream(ctx)
-				lastDream = now
-			}
+			s.scheduleTick(ctx, now)
 		}
 	}
 }
 
-// shouldDream returns true if either the interval or the idle trigger has
-// fired. lastDream may be the zero value (first iteration); in that case
-// the interval branch fires immediately so the first scheduled dream
-// happens promptly after server boot.
-func (s *Server) shouldDream(ctx context.Context, now, lastDream time.Time, interval, idle time.Duration) bool {
-	if now.Sub(lastDream) >= interval {
+// scheduleTick enumerates pending projects and dreams the ones whose
+// per-project schedule says it's time. Pulled out of runScheduler so it
+// can be tested directly with a synthetic `now` without driving a ticker.
+func (s *Server) scheduleTick(ctx context.Context, now time.Time) {
+	projects, err := s.store.PendingMessageProjects(ctx)
+	if err != nil {
+		s.logger.Warn("scheduler: list pending projects", "err", err.Error())
+		return
+	}
+	if len(projects) == 0 {
+		return
+	}
+	lastMsg := s.lastMessageTime()
+	for _, projectID := range projects {
+		dc := s.resolveProject(projectID).Dreaming
+		if !dc.Enabled {
+			continue
+		}
+		interval := dc.IntervalDuration()
+		idle := time.Duration(dc.OnIdleSeconds) * time.Second
+
+		s.lastScheduledDreamAtMu.Lock()
+		lastDream := s.lastScheduledDreamAt[projectID]
+		s.lastScheduledDreamAtMu.Unlock()
+
+		if !s.shouldDreamProject(now, lastDream, lastMsg, interval, idle) {
+			continue
+		}
+		// Only advance lastScheduledDreamAt when an actual pass ran. If
+		// Dream returns Skipped (single-flight collision with a manual
+		// dream_now or a longer-running prior pass), we leave the
+		// timestamp alone so the next tick reconsiders this project
+		// instead of losing an interval.
+		if ran := s.runScheduledDream(ctx, projectID, dc); ran {
+			s.lastScheduledDreamAtMu.Lock()
+			s.lastScheduledDreamAt[projectID] = now
+			s.lastScheduledDreamAtMu.Unlock()
+		}
+	}
+}
+
+// shouldDreamProject answers "is this specific project due?" — interval
+// elapsed since its own last scheduled pass, OR idle threshold met
+// since the last record_messages came in for ANY project. The idle
+// signal is global because record_messages stamps a single timestamp;
+// that's a deliberate trade — a busy session in project A counts as
+// "activity" against project B's idle clock too. In practice this is
+// fine: idle = "things are quiet, dream now", and one quiet system
+// is one quiet system.
+//
+// lastDream may be the zero value (first ever pass for this project);
+// in that case the interval branch fires immediately so a freshly-
+// buffering project gets dreamt on the next tick.
+func (s *Server) shouldDreamProject(now, lastDream, lastMsg time.Time, interval, idle time.Duration) bool {
+	if interval > 0 && now.Sub(lastDream) >= interval {
 		return true
 	}
 	if idle <= 0 {
 		return false
 	}
-	lastMsg := s.lastMessageTime()
 	if lastMsg.IsZero() || now.Sub(lastMsg) < idle {
 		return false
 	}
-	// Cheap pre-check - don't even fire if there's nothing to do.
-	return s.hasUnprocessedMessages(ctx)
+	// Pending presence is already implied — scheduleTick only iterates
+	// projects with buffered messages, so reaching here means there's
+	// work to do.
+	return true
 }
 
-func (s *Server) hasUnprocessedMessages(ctx context.Context) bool {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return false
-	}
-	projectID, err := scope.Resolve(cwd)
-	if err != nil {
-		return false
-	}
-	sessions, err := s.store.SessionsWithMessages(ctx, projectID, 1)
-	if err != nil {
-		return false
-	}
-	return len(sessions) > 0
-}
-
-func (s *Server) runScheduledDream(ctx context.Context) {
-	// Resolve per-project so "turn down dreaming for project X" takes effect
-	// even on scheduler-driven passes. CWD's project id is the natural
-	// scope for the scheduler — it follows the desktop server's working dir.
-	cwd, err := os.Getwd()
-	projectID := ""
-	if err == nil {
-		projectID, _ = scope.Resolve(cwd)
-	}
-	dc := s.resolveProject(projectID).Dreaming
+// runScheduledDream runs one project's pass with its effective config.
+// Returns true if a real pass executed — false if Dream returned Skipped
+// (single-flight collision with a concurrent dream_now or longer-running
+// prior pass) or errored. The scheduler uses the bool to decide whether
+// to advance lastScheduledDreamAt: skipped passes leave the timestamp
+// alone so the project gets reconsidered on the next tick.
+func (s *Server) runScheduledDream(ctx context.Context, projectID string, dc config.DreamingConfig) bool {
 	res, err := s.Dream(ctx, DreamOptions{
 		ProjectID:       projectID,
 		MinMessages:     dc.MinMessages,
 		ContextMemories: dc.ContextMemories,
 	})
 	if err != nil {
-		s.logger.Error("scheduled dream failed", "err", err.Error())
-		return
+		s.logger.Error("scheduled dream failed", "project_id", projectID, "err", err.Error())
+		return false
 	}
-	if res.Skipped || res.SessionsProcessed == 0 {
-		return
+	if res.Skipped {
+		return false
+	}
+	if res.SessionsProcessed == 0 {
+		// No sessions matched (e.g. MinMessages filtered them all out).
+		// Still counts as a real pass — the work was considered. Advance
+		// the timestamp so we don't tight-loop reconsidering an empty
+		// buffer.
+		return true
 	}
 	s.logger.Info("scheduled dream completed",
+		"project_id", projectID,
 		"sessions", res.SessionsProcessed,
 		"messages", res.MessagesProcessed,
 		"created", res.OpsCreated,
@@ -382,14 +596,22 @@ func (s *Server) runScheduledDream(ctx context.Context) {
 		"deleted", res.OpsDeleted,
 		"skipped_ops", res.OpsSkipped,
 	)
+	return true
 }
 
 // dreamOp is one operation in the reasoner's structured JSON response.
+//
+// Category names the content-shape axis the memory serves — one of the
+// five canonical store.MemoryCategory values. Required on create ops;
+// optional on update ops (when set, overwrites the existing category).
+// Invalid / missing categories on create get stored as NULL and the
+// memory surfaces in the Review queue for the user to classify.
 type dreamOp struct {
 	Op        string    `json:"op"`
 	UUID      string    `json:"uuid,omitempty"`
 	Content   string    `json:"content,omitempty"`
 	Tags      *[]string `json:"tags,omitempty"`
+	Category  string    `json:"category,omitempty"`
 	Reasoning string    `json:"reasoning"`
 }
 
@@ -477,32 +699,11 @@ func excerpt(s string, n int) string {
 	return s[:n] + "…"
 }
 
-const dreamSystemPrompt = `You are a memory curator for a software engineer's coding session.
-
-Review the conversation and the current memories for this codebase, then decide which durable facts are worth keeping for FUTURE sessions.
-
-WORTH REMEMBERING:
-- Decisions and their WHY (why we chose X over Y).
-- Gotchas and non-obvious constraints.
-- Project facts not derivable from reading the code (incidents, conventions, external dependencies, team agreements).
-- Updates that correct or extend an existing memory.
-
-SKIP:
-- Trivia, generic programming advice, anything in standard documentation.
-- Ephemeral state ("I'm working on X right now").
-- Things obvious from reading the code or git history.
-- Task-specific noise.
-
-OUTPUT FORMAT - strict JSON only, no prose, no markdown fences:
-{
-  "operations": [
-    {"op": "create", "content": "...", "tags": ["..."], "reasoning": "..."},
-    {"op": "update", "uuid": "<existing-uuid>", "content": "...", "tags": ["..."], "reasoning": "..."},
-    {"op": "delete", "uuid": "<existing-uuid>", "reasoning": "..."}
-  ]
-}
-
-For each operation, "reasoning" is a one-sentence justification. New memories should be specific and self-contained - include the why, not just the what. If nothing is worth changing, return {"operations": []}.`
+// The dream system prompt now lives in internal/config — defaulted from
+// DefaultDreamPrompt, overridable per-user via the Settings UI which
+// writes ~/.config/yullu/dream_prompt.txt. callReasoner above resolves
+// the current value at call time so edits take effect on the next pass
+// without a restart.
 
 // callReasoner asks the LLM for a completion. Prefers MCP sampling - the
 // client (Claude Code, Codex, etc.) handles the call using its own
@@ -567,8 +768,14 @@ func (s *Server) callReasoner(ctx context.Context, system, userPrompt string, ma
 	})
 }
 
-func buildDreamUserPrompt(memories []store.Memory, msgs []store.SessionMessage) string {
+func buildDreamUserPrompt(projectID string, memories []store.Memory, msgs []store.SessionMessage, rejected []store.RejectedMemory) string {
 	var buf strings.Builder
+	// Stamp the active project up front so the reasoner has an explicit
+	// boundary to reject cross-project facts against. Belt-and-braces with
+	// the project filter on SessionMessages — the prompt-side guard means
+	// even if a stray message slips through, the model has been told to
+	// drop it instead of summarising it into a memory.
+	fmt.Fprintf(&buf, "PROJECT: %s\n\n", projectID)
 	buf.WriteString("CURRENT MEMORIES:\n")
 	if len(memories) == 0 {
 		buf.WriteString("(none yet)\n")
@@ -577,6 +784,21 @@ func buildDreamUserPrompt(memories []store.Memory, msgs []store.SessionMessage) 
 			fmt.Fprintf(&buf, "- uuid=%s tags=%v\n  %s\n", m.UUID, m.Tags, m.Content)
 		}
 	}
+
+	// Anti-examples — memories a human marked as low-value with reasons.
+	// Shown verbatim so the model can see what shape of memory not to
+	// produce. Project-scoped; we never replay another project's signal
+	// here.
+	if len(rejected) > 0 {
+		buf.WriteString("\nPREVIOUSLY REJECTED MEMORIES — a human marked these as low-value. Do NOT produce memories like these; take the rating comment as concrete guidance:\n")
+		for _, r := range rejected {
+			fmt.Fprintf(&buf, "- rating=%d/10 \"%s\"\n", r.Rating, r.Content)
+			if r.Comment != "" {
+				fmt.Fprintf(&buf, "  reason: %s\n", r.Comment)
+			}
+		}
+	}
+
 	buf.WriteString("\nCONVERSATION:\n")
 	for _, m := range msgs {
 		fmt.Fprintf(&buf, "[%s] %s\n", m.Role, m.Content)

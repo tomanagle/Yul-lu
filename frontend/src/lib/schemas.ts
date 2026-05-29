@@ -21,6 +21,10 @@ export const StatusSchema = z.object({
   config_path: z.string(),
   db_path: z.string(),
   embedder: z.string().optional(),
+  // reasoner is the direct provider name when configured; absent means
+  // "sampling-only mode" (the assistant calls dream_now via MCP sampling,
+  // the background scheduler + desktop button can't run).
+  reasoner: z.string().optional(),
   message: z.string().optional(),
   hint: z.string().optional(),
 });
@@ -92,7 +96,36 @@ export const DreamStatsSchema = z.object({
 });
 export type DreamStats = z.infer<typeof DreamStatsSchema>;
 
+// ----- Dream passes (per-cycle history) -----------------------------------
+
+export const DreamPassSchema = z.object({
+  id: z.number(),
+  project_id: z.string(),
+  at: z.string(), // RFC3339
+  sessions_processed: z.number(),
+  messages_processed: z.number(),
+  ops_created: z.number(),
+  ops_updated: z.number(),
+  ops_deleted: z.number(),
+  ops_skipped: z.number(),
+  errors: z.array(z.string()).optional(),
+});
+export type DreamPass = z.infer<typeof DreamPassSchema>;
+
 // ----- Memories ------------------------------------------------------------
+
+// MemoryCategory is the content-shape axis the agent uses at retrieval
+// time. Mirrors the Go-side store.MemoryCategory enum. Empty means
+// "not yet classified" — surfaces in the Review queue for the user to
+// triage.
+export const MemoryCategorySchema = z.enum([
+  "process",  // how to do things in this repo
+  "decision", // why we made the choices we made
+  "gotcha",   // what bites
+  "domain",   // what words mean here
+  "style",    // what the project looks and feels like
+]);
+export type MemoryCategory = z.infer<typeof MemoryCategorySchema>;
 
 export const MemorySchema = z.object({
   id: z.number(),
@@ -103,6 +136,15 @@ export const MemorySchema = z.object({
   created_at: z.string(),
   updated_at: z.string(),
   score: z.number().optional(),
+  // rating is the user-supplied quality score (6..10). Memories rated ≤ 5
+  // are moved out of the memories table entirely, so a present rating
+  // here is always ≥ 6. Absent means un-rated (lives in the Review queue).
+  rating: z.number().optional(),
+  rating_comment: z.string().optional(),
+  // category groups memories by what kind of fact they carry. Optional
+  // because pre-step-1 memories AND reasoner-emitted memories with an
+  // unrecognised category both end up empty.
+  category: MemoryCategorySchema.optional(),
 });
 export type Memory = z.infer<typeof MemorySchema>;
 
@@ -257,3 +299,75 @@ export const MemoriesListSchema = listOf(MemorySchema);
 export const DailyMemoryEventsListSchema = listOf(DailyMemoryEventsSchema);
 export const DailyUsageListSchema = listOf(DailyUsageSchema);
 export const UsageBucketListSchema = listOf(UsageBucketSchema);
+export const DreamPassesListSchema = listOf(DreamPassSchema);
+
+// ----- Buffered sessions ---------------------------------------------------
+
+export const BufferedMessageSchema = z.object({
+  role: z.string(),
+  content: z.string(),
+  at: z.string().optional(),
+});
+export type BufferedMessage = z.infer<typeof BufferedMessageSchema>;
+
+export const BufferedSessionSchema = z.object({
+  session_id: z.string(),
+  project_id: z.string(),
+  message_count: z.number(),
+  messages: z.array(BufferedMessageSchema),
+});
+export type BufferedSession = z.infer<typeof BufferedSessionSchema>;
+
+export const BufferedSessionsListSchema = listOf(BufferedSessionSchema);
+
+// ----- Dream progress ------------------------------------------------------
+
+// Live snapshot of the in-flight dream pass (or the last finished pass when
+// nothing's running). Polled by the dashboard with a short refetch interval
+// — handler is a cheap in-memory read, so 1–2s is safe.
+export const DreamProgressSchema = z.object({
+  running: z.boolean(),
+  project_id: z.string().optional(),
+  // "starting" before sessions enumerated; "session" while one is being
+  // reasoned about; "idle" between/after passes.
+  phase: z.string().optional(),
+  started_at: z.string().optional(),  // RFC3339, absent when never run
+  finished_at: z.string().optional(), // RFC3339, absent until first pass ends
+  total_sessions: z.number(),
+  completed_sessions: z.number(),
+  current_session_id: z.string().optional(),
+  messages_processed: z.number(),
+  ops_created: z.number(),
+  ops_updated: z.number(),
+  ops_deleted: z.number(),
+  ops_skipped: z.number(),
+  last_error: z.string().optional(),
+  // Scheduler-derived fields — let the dreaming card show "next pass in
+  // N min" countdowns without polling a second endpoint. scheduler_enabled
+  // = false means the *_at fields stay empty and the UI shows "manual only".
+  scheduler_enabled: z.boolean(),
+  interval_seconds: z.number(),
+  on_idle_seconds: z.number(),
+  last_message_at: z.string().optional(),
+  last_scheduled_at: z.string().optional(),
+  next_interval_at: z.string().optional(),
+  next_idle_at: z.string().optional(),
+  next_at: z.string().optional(),
+  next_reason: z.string().optional(), // "interval" | "idle"
+});
+export type DreamProgress = z.infer<typeof DreamProgressSchema>;
+
+// ----- Dream prompt --------------------------------------------------------
+
+export const DreamPromptViewSchema = z.object({
+  prompt: z.string(),
+  default: z.string(),
+  // output_format is the strict-JSON contract the server always appends
+  // before calling the reasoner. The UI renders it read-only so users
+  // can see the full system prompt without being able to break the
+  // parser by deleting the format block.
+  output_format: z.string(),
+  is_custom: z.boolean(),
+  path: z.string().optional(),
+});
+export type DreamPromptView = z.infer<typeof DreamPromptViewSchema>;

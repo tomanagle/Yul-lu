@@ -20,7 +20,7 @@ binary serves three surfaces on `localhost:47823`:
 
 Memories are stored in SQLite (`~/.local/share/yullu/memories.db`) with
 sqlite-vec for embedding search and FTS5 for BM25 text search. Sync
-across teammates happens via `.yullu/events/*.json` committed to the
+across teammates happens via `.yullu/logs/*.json` committed to the
 repo.
 
 `Yul'lu` is the **display** spelling (with apostrophe). `yullu` is the
@@ -55,7 +55,7 @@ yullu/
     ├── applog/         slog setup
     ├── config/         Config + ConfigOverride (per-project) + resolver
     ├── handlers/       One REST handler per file, GOTTH-style DI
-    ├── memlog/         .yullu/events/ writer + reader
+    ├── memlog/         .yullu/logs/ writer + reader
     ├── scope/          project_id resolution (git remote → path → cwd)
     ├── server/         MCP tool handlers, Dream + Reconcile algorithms
     └── store/          SQLite + sqlite-vec, schema migrations

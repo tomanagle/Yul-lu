@@ -1,13 +1,13 @@
-// Package memlog implements the append-only event log used to share memories
-// across developers via the codebase's .yullu/ directory.
+// Package memlog implements the append-only memory log used to share
+// memories across developers via the codebase's .yullu/ directory.
 //
-// Memory mutations are serialized as JSON event files under
-// .yullu/events/, one event per file. Filenames are sortable by time
-// (RFC-3339-ish prefix + short ID suffix), so readers can apply events in
-// order and track progress via a watermark.
+// Memory mutations are serialized as JSON files under .yullu/logs/, one
+// entry per file. Filenames are sortable by time (RFC-3339-ish prefix +
+// short ID suffix), so readers can apply entries in order and track
+// progress via a watermark.
 //
-// The on-disk format is the single source of truth for cross-machine sync;
-// the local SQLite store is a materialized projection.
+// The on-disk format is the single source of truth for cross-machine
+// sync; the local SQLite store is a materialized projection.
 package memlog
 
 import (
@@ -16,15 +16,16 @@ import (
 	"github.com/google/uuid"
 )
 
-// EventType discriminates the event payload. Embedding vectors live inside
-// create / update events under the Vectors map - there is no separate
-// "embedding" type.
+// EventType discriminates the entry payload. Embedding vectors live inside
+// remember / revise entries under the Vectors map — there is no separate
+// "embedding" type. Verbs are memory-themed: remember (new memory),
+// revise (changed memory), forget (deleted memory).
 type EventType string
 
 const (
-	EventCreate EventType = "create"
-	EventUpdate EventType = "update"
-	EventDelete EventType = "delete"
+	EventRemember EventType = "remember"
+	EventRevise   EventType = "revise"
+	EventForget   EventType = "forget"
 )
 
 // Event is a single record in the log. Pointer fields are used for partial
@@ -63,16 +64,16 @@ type Event struct {
 	Author string `json:"author,omitempty"`
 }
 
-// NewCreateEvent builds a create event for a new memory. Pass an empty
-// vectors map (or nil) if you don't want to publish an embedding alongside
-// the content - teammates will have to embed locally.
-func NewCreateEvent(memoryUUID, content string, tags []string, vectors map[string][]float32) Event {
+// NewRememberEvent builds a "remember" entry for a new memory. Pass an
+// empty vectors map (or nil) if you don't want to publish an embedding
+// alongside the content — teammates will have to embed locally.
+func NewRememberEvent(memoryUUID, content string, tags []string, vectors map[string][]float32) Event {
 	if tags == nil {
 		tags = []string{}
 	}
 	return Event{
 		ID:        uuid.NewString(),
-		Type:      EventCreate,
+		Type:      EventRemember,
 		MemoryID:  memoryUUID,
 		Timestamp: time.Now().UTC(),
 		Content:   &content,
@@ -81,14 +82,14 @@ func NewCreateEvent(memoryUUID, content string, tags []string, vectors map[strin
 	}
 }
 
-// NewUpdateEvent builds an update event. Any of content, tags, or vectors
-// may be omitted (nil) - at least one should be set for the event to do
-// anything. Setting content invalidates vectors from earlier events; passing
-// the new vectors in the same event keeps things atomic.
-func NewUpdateEvent(memoryUUID string, content *string, tags *[]string, vectors map[string][]float32) Event {
+// NewReviseEvent builds a "revise" entry. Any of content, tags, or vectors
+// may be omitted (nil) — at least one should be set for the entry to do
+// anything. Setting content invalidates vectors from earlier entries;
+// passing the new vectors in the same entry keeps things atomic.
+func NewReviseEvent(memoryUUID string, content *string, tags *[]string, vectors map[string][]float32) Event {
 	return Event{
 		ID:        uuid.NewString(),
-		Type:      EventUpdate,
+		Type:      EventRevise,
 		MemoryID:  memoryUUID,
 		Timestamp: time.Now().UTC(),
 		Content:   content,
@@ -97,19 +98,20 @@ func NewUpdateEvent(memoryUUID string, content *string, tags *[]string, vectors 
 	}
 }
 
-// NewVectorEvent builds an update event that only carries vectors. Used by
-// reconcile when a teammate's content arrives without a matching vector and
-// the local server has to embed it itself - the freshly-computed vector
-// gets published so the next teammate on the same model skips the work.
+// NewVectorEvent builds a "revise" entry that only carries vectors. Used
+// by reconcile when a teammate's content arrives without a matching vector
+// and the local server has to embed it itself — the freshly-computed
+// vector gets published so the next teammate on the same model skips the
+// work.
 func NewVectorEvent(memoryUUID string, vectors map[string][]float32) Event {
-	return NewUpdateEvent(memoryUUID, nil, nil, vectors)
+	return NewReviseEvent(memoryUUID, nil, nil, vectors)
 }
 
-// NewDeleteEvent builds a delete event for an existing memory.
-func NewDeleteEvent(memoryUUID string) Event {
+// NewForgetEvent builds a "forget" entry for an existing memory.
+func NewForgetEvent(memoryUUID string) Event {
 	return Event{
 		ID:        uuid.NewString(),
-		Type:      EventDelete,
+		Type:      EventForget,
 		MemoryID:  memoryUUID,
 		Timestamp: time.Now().UTC(),
 	}

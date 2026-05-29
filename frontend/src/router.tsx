@@ -10,14 +10,13 @@ import {
   createRouter,
   Link,
   Outlet,
-  redirect,
   useLocation,
 } from "@tanstack/react-router";
 import {
-  BarChart3,
   Brain,
   ChevronLeft,
   ChevronRight,
+  ClipboardCheck,
   FolderOpen,
   Network,
   Settings,
@@ -28,6 +27,7 @@ import {
 import { DreamingPage } from "@/routes/dreaming";
 import { GraphPage } from "@/routes/graph";
 import { MemoriesPage } from "@/routes/memories";
+import { ReviewPage } from "@/routes/review";
 import { SettingsPage } from "@/routes/settings";
 import { StatsPage } from "@/routes/stats";
 import { useProjects } from "@/lib/queries";
@@ -45,11 +45,13 @@ import { cn } from "@/lib/utils";
 // (configuration), so it sits at the bottom of the sidebar with a divider.
 type NavEntry = { to: string; label: string; icon: LucideIcon };
 
+// Stats lives at "/" (clickable brand at top of sidebar) so we don't
+// double up on a "Home"-shaped link.
 const PRIMARY_NAV: NavEntry[] = [
-  { to: "/stats", label: "Stats", icon: BarChart3 },
   { to: "/memories", label: "Memories", icon: Brain },
   { to: "/graph", label: "Graph", icon: Network },
   { to: "/dreaming", label: "Dreaming", icon: Sparkles },
+  { to: "/review", label: "Review", icon: ClipboardCheck },
 ];
 
 const SETTINGS_NAV: NavEntry = {
@@ -128,13 +130,20 @@ function Sidebar({ collapsed }: { collapsed: boolean }) {
   );
 }
 
+// SidebarBrand doubles as the link to the Stats home page. Clicking the
+// logo or wordmark goes to "/". Previously Stats was a sidebar nav item;
+// folding it into the brand keeps the primary nav focused on the four
+// data pages.
 function SidebarBrand({ collapsed }: { collapsed: boolean }) {
   return (
-    <div
+    <Link
+      to="/"
       className={cn(
         "flex items-center gap-2 px-4 pb-3 pt-5 transition-opacity duration-200",
+        "rounded-md hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         collapsed && "justify-center px-0",
       )}
+      title="Stats"
     >
       <span
         aria-hidden
@@ -146,7 +155,7 @@ function SidebarBrand({ collapsed }: { collapsed: boolean }) {
       {!collapsed && (
         <span className="text-sm font-semibold tracking-tight text-foreground">Yul'lu</span>
       )}
-    </div>
+    </Link>
   );
 }
 
@@ -253,12 +262,13 @@ function TopBar() {
 
 const rootRoute = createRootRoute({ component: RootLayout });
 
+// "/" is the Stats home page. The brand link in the sidebar points here.
+// (Previously "/" redirected to "/stats"; that page is now folded into
+// the index route since Stats has been dropped from the primary nav.)
 const indexRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/",
-  beforeLoad: () => {
-    throw redirect({ to: "/stats" });
-  },
+  component: StatsPage,
 });
 
 const memoriesRoute = createRoute({
@@ -291,12 +301,19 @@ const settingsRoute = createRoute({
   component: SettingsPage,
 });
 
+const reviewRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/review",
+  component: ReviewPage,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   memoriesRoute,
   dreamingRoute,
   statsRoute,
   graphRoute,
+  reviewRoute,
   settingsRoute,
 ]);
 

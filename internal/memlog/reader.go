@@ -9,12 +9,12 @@ import (
 	"strings"
 )
 
-// Reader reads events from a .yullu/events/ directory.
+// Reader reads memory-log entries from a .yullu/logs/ directory.
 type Reader struct {
-	eventsDir string
+	logsDir string
 }
 
-// NewReader returns a reader for the events directory under gitRoot/syncDir.
+// NewReader returns a reader for the logs directory under gitRoot/syncDir.
 // Returns nil if gitRoot is empty.
 func NewReader(gitRoot, syncDir string) *Reader {
 	if gitRoot == "" {
@@ -23,34 +23,34 @@ func NewReader(gitRoot, syncDir string) *Reader {
 	if syncDir == "" {
 		syncDir = ".yullu"
 	}
-	return &Reader{eventsDir: filepath.Join(gitRoot, syncDir, "events")}
+	return &Reader{logsDir: filepath.Join(gitRoot, syncDir, "logs")}
 }
 
-// Dir returns the absolute path of the events directory.
-func (r *Reader) Dir() string { return r.eventsDir }
+// Dir returns the absolute path of the logs directory.
+func (r *Reader) Dir() string { return r.logsDir }
 
-// Entry pairs an event with the filename it was loaded from. The filename
-// doubles as the watermark token - callers store the highest processed
-// filename and skip anything <= it on the next pass.
+// Entry pairs a parsed entry with the filename it was loaded from. The
+// filename doubles as the watermark token — callers store the highest
+// processed filename and skip anything <= it on the next pass.
 type Entry struct {
 	Filename string
 	Event    Event
 }
 
-// Read returns all events in the directory, sorted lexically by filename
-// (which sorts by time given the filename format). Returns an empty slice if
-// the directory doesn't exist.
+// Read returns all entries in the directory, sorted lexically by filename
+// (which sorts by time given the filename format). Returns an empty slice
+// if the directory doesn't exist.
 //
-// Files that fail to parse are skipped with a noted error; one bad event
-// shouldn't stop the whole log from being read. Malformed entries are
+// Files that fail to parse are skipped with a noted error; one bad entry
+// shouldn't stop the whole log from being read. Malformed files are
 // returned separately for the caller to surface.
 func (r *Reader) Read() ([]Entry, []error, error) {
-	dirEntries, err := os.ReadDir(r.eventsDir)
+	dirEntries, err := os.ReadDir(r.logsDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil, nil
 		}
-		return nil, nil, fmt.Errorf("read events dir %s: %w", r.eventsDir, err)
+		return nil, nil, fmt.Errorf("read logs dir %s: %w", r.logsDir, err)
 	}
 
 	names := make([]string, 0, len(dirEntries))
@@ -73,7 +73,7 @@ func (r *Reader) Read() ([]Entry, []error, error) {
 	out := make([]Entry, 0, len(names))
 	var parseErrors []error
 	for _, name := range names {
-		path := filepath.Join(r.eventsDir, name)
+		path := filepath.Join(r.logsDir, name)
 		data, err := os.ReadFile(path)
 		if err != nil {
 			parseErrors = append(parseErrors, fmt.Errorf("%s: read: %w", name, err))

@@ -192,9 +192,20 @@ function GlobalSettings() {
         <CardHeader>
           <CardTitle>Reasoning</CardTitle>
           <CardDescription>
-            Powers dreaming. Blank uses MCP sampling - your client (Claude Code, Codex) makes the
-            LLM call via its own subscription. Configure a direct provider here to also enable
-            background dreaming.
+            Powers dreaming. Two modes:
+            <br />
+            <br />
+            <strong>MCP sampling</strong> (blank, default) — your AI client (Claude Code, Codex,
+            Cursor) makes the LLM call against its own subscription. No API key needed, but{" "}
+            <em>dreaming only runs when the assistant calls it</em>: the background scheduler and
+            the "Dream now" button can't sample because they have no client session. The shipped
+            skill prompts the assistant to call <code>dream_now</code> as the buffer fills, so
+            this mode works fine for day-to-day use.
+            <br />
+            <br />
+            <strong>Direct provider</strong> — set Anthropic or OpenAI with an API key. Enables
+            background dreaming on a timer AND the "Dream now" button. yullu bills against your
+            API key, not your subscription.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">

@@ -116,7 +116,7 @@ func TestDreamRoundTrip(t *testing.T) {
 
 	srv, st := newTestServer(t, emb, reasoner)
 	// Insert the seed memory through the real store so reconcile finds it.
-	if _, err := st.Insert(ctx, existingUUID, projectID, "old content", []string{"old"}, []float32{1, 2, 3, 4}); err != nil {
+	if _, err := st.Insert(ctx, existingUUID, projectID, "old content", []string{"old"}, []float32{1, 2, 3, 4}, ""); err != nil {
 		t.Fatalf("insert seed: %v", err)
 	}
 
@@ -164,7 +164,7 @@ func TestDreamRoundTrip(t *testing.T) {
 	}
 
 	// Session messages should be cleaned up.
-	remaining, err := st.SessionMessages(ctx, sessionID)
+	remaining, err := st.SessionMessages(ctx, projectID, sessionID)
 	if err != nil {
 		t.Fatalf("list session msgs: %v", err)
 	}
@@ -181,9 +181,9 @@ func TestDreamRoundTrip(t *testing.T) {
 	var creates, updates int
 	for _, e := range entries {
 		switch e.Event.Type {
-		case memlog.EventCreate:
+		case memlog.EventRemember:
 			creates++
-		case memlog.EventUpdate:
+		case memlog.EventRevise:
 			updates++
 		}
 	}
@@ -230,7 +230,7 @@ func TestDreamReasonerErrorKeepsMessages(t *testing.T) {
 		t.Errorf("no ops should apply on parse failure, got %+v", res)
 	}
 
-	remaining, err := st.SessionMessages(ctx, sessionID)
+	remaining, err := st.SessionMessages(ctx, projectID, sessionID)
 	if err != nil {
 		t.Fatalf("list session msgs: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestDreamReasonerCallError(t *testing.T) {
 	if len(res.Errors) == 0 {
 		t.Errorf("expected reasoner error to appear in result.Errors")
 	}
-	remaining, _ := st.SessionMessages(ctx, sessionID)
+	remaining, _ := st.SessionMessages(ctx, projectID, sessionID)
 	if len(remaining) != 1 {
 		t.Errorf("messages should survive reasoner error, got %d", len(remaining))
 	}

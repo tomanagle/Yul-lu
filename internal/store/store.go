@@ -31,7 +31,7 @@ func init() {
 // ID is the local autoincrement primary key - fast for joins to memory_vectors
 // but not portable across machines.
 // UUID is the stable, machine-independent identifier used in the event log
-// (.yullu/events). All cross-machine references use the UUID.
+// (.yullu/logs). All cross-machine references use the UUID.
 type Memory struct {
 	ID        int64     `json:"id"`
 	UUID      string    `json:"uuid"`
@@ -41,6 +41,67 @@ type Memory struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Score     float64   `json:"score,omitempty"` // populated only by Search
+	// Rating is the user-assigned quality score (1–10) for the review queue.
+	// Nil means un-rated. Memories rated ≤ 5 are moved to rejected_memories
+	// and removed from this table — so a non-nil Rating here is always ≥ 6.
+	Rating        *int   `json:"rating,omitempty"`
+	RatingComment string `json:"rating_comment,omitempty"`
+	// Category groups memories by the shape of fact they carry — process,
+	// decision, gotcha, domain, style. Lets the agent ask for only the
+	// categories relevant to its current task instead of fetching the
+	// whole pool. Empty means "not yet classified" (pre-category memories
+	// or a dream pass that emitted an unknown value).
+	Category MemoryCategory `json:"category,omitempty"`
+}
+
+// MemoryCategory is the content-shape axis used by the agent at retrieval
+// time. The set is deliberately small (5) so the agent can hold all of
+// them in working memory and so the user doesn't face decision fatigue
+// when reviewing. Memories that don't fit any of these should usually be
+// dropped, not invented into a new category.
+type MemoryCategory string
+
+const (
+	// CategoryProcess: how to do things in this repo — commands, file
+	// layout, naming, where new code goes, testing recipes.
+	CategoryProcess MemoryCategory = "process"
+	// CategoryDecision: why we made the choices we made — architectural
+	// trade-offs, rejected alternatives, "we tried X and went back to Y".
+	CategoryDecision MemoryCategory = "decision"
+	// CategoryGotcha: what bites — non-obvious constraints, API quirks,
+	// "must always X or it breaks", concurrency rules, performance traps.
+	CategoryGotcha MemoryCategory = "gotcha"
+	// CategoryDomain: what words mean here — glossary terms, business
+	// invariants, entity relationships, domain-specific semantics.
+	CategoryDomain MemoryCategory = "domain"
+	// CategoryStyle: what the project looks and feels like — UI component
+	// patterns, copy tone, accessibility rules, visual language.
+	CategoryStyle MemoryCategory = "style"
+)
+
+// IsValidCategory reports whether c is one of the canonical categories.
+// Used by the dream pipeline to filter out reasoner-emitted values that
+// don't match the enum (we store empty rather than the invalid string so
+// retrieval queries don't have to defend against typos).
+func IsValidCategory(c MemoryCategory) bool {
+	switch c {
+	case CategoryProcess, CategoryDecision, CategoryGotcha, CategoryDomain, CategoryStyle:
+		return true
+	}
+	return false
+}
+
+// RejectedMemory is a memory the user scored ≤ 5. The row that was in
+// `memories` is gone; this is the anti-example signal we replay into
+// future dream prompts.
+type RejectedMemory struct {
+	ID         int64     `json:"id"`
+	ProjectID  string    `json:"project_id"`
+	Content    string    `json:"content"`
+	Tags       []string  `json:"tags,omitempty"`
+	Rating     int       `json:"rating"`
+	Comment    string    `json:"comment,omitempty"`
+	RejectedAt time.Time `json:"rejected_at"`
 }
 
 // Store wraps the database and the configured embedding dimension.
@@ -48,6 +109,48 @@ type Store struct {
 	db                   *sql.DB
 	dim                  int
 	recordMemoryEventErr error // last error from recordMemoryEvent (best-effort logging)
+}
+
+// OpenReadOnly opens an existing store without requiring the caller to
+// supply an embedder. The embedder ID + dim are read from the meta table
+// that the writer-side Open populates. Use this from CLI subcommands
+// that only need to query memories (export, dump, etc.) so the user
+// doesn't have to have a working API key just to read what's already
+// in the DB.
+//
+// Errors if the file doesn't exist or has no meta yet — there's no
+// point reading a DB that was never written to.
+func OpenReadOnly(path string) (*Store, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("open store for read: %w", err)
+	}
+	dsn := "file:" + path + "?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=on&mode=ro"
+	db, err := sql.Open("sqlite3", dsn)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	s := &Store{db: db}
+
+	ctx := context.Background()
+	// Probe the meta table directly. If the file isn't a real Yul'lu DB
+	// (or hasn't been initialised yet) this errors cleanly.
+	storedDimStr, ok, err := s.getMeta(ctx, "embed_dim")
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("read meta.embed_dim: %w", err)
+	}
+	if !ok {
+		_ = db.Close()
+		return nil, fmt.Errorf("db at %s has no embedder identity yet — has anything been stored?", path)
+	}
+	var dim int
+	if _, err := fmt.Sscanf(storedDimStr, "%d", &dim); err != nil || dim <= 0 {
+		_ = db.Close()
+		return nil, fmt.Errorf("db meta.embed_dim is malformed (%q)", storedDimStr)
+	}
+	s.dim = dim
+	return s, nil
 }
 
 // MustOpen opens the store and panics on failure. Use in process startup
@@ -119,10 +222,34 @@ func (s *Store) init(embedderID string) error {
 			content TEXT NOT NULL,
 			tags_json TEXT NOT NULL DEFAULT '[]',
 			created_at INTEGER NOT NULL,
-			updated_at INTEGER NOT NULL
+			updated_at INTEGER NOT NULL,
+			rating INTEGER,
+			rating_comment TEXT,
+			category TEXT
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_memories_updated ON memories(project_id, updated_at DESC)`,
+		// Note: idx_memories_project_category needs the category column,
+		// which is added via ALTER below for older DBs. CREATE INDEX runs
+		// AFTER the ALTER migration. Don't move it into this block — on a
+		// pre-category DB, the index creation would fail before the
+		// column exists.
+		// Negative training signal for the dream prompt. When a user rates a
+		// memory ≤ 5, the row is moved here and the original is deleted —
+		// the memory is gone from retrieval / dream context, but the example
+		// + the user's reason live on as anti-examples in future dream
+		// passes. `rejected_at` is unix-ms so it sorts alongside everything
+		// else in this DB.
+		`CREATE TABLE IF NOT EXISTS rejected_memories (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			project_id TEXT NOT NULL,
+			content TEXT NOT NULL,
+			tags_json TEXT NOT NULL DEFAULT '[]',
+			rating INTEGER NOT NULL,
+			comment TEXT,
+			rejected_at INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_rejected_project_at ON rejected_memories(project_id, rejected_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS usage (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			at INTEGER NOT NULL,
@@ -140,7 +267,7 @@ func (s *Store) init(embedderID string) error {
 		`CREATE INDEX IF NOT EXISTS idx_usage_at ON usage(at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_usage_provider_model ON usage(provider, model)`,
 		// The dream buffer: LLM-recorded conversation turns awaiting processing.
-		// Never published to .yullu/events/ - raw conversation may be private.
+		// Never published to .yullu/logs/ - raw conversation may be private.
 		// Rows are deleted once dreaming has extracted memories from them.
 		`CREATE TABLE IF NOT EXISTS session_messages (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -209,6 +336,35 @@ func (s *Store) init(embedderID string) error {
 	// Migrate older DBs: add the uuid column, backfill, then enforce uniqueness.
 	if err := s.migrateMemoryUUIDs(ctx); err != nil {
 		return err
+	}
+
+	// Migrate older DBs: add the rating + category columns. CREATE TABLE
+	// IF NOT EXISTS won't add new columns to an existing table, so we
+	// run ALTER idempotently here. SQLite errors with "duplicate column
+	// name" when the column already exists — swallowed via
+	// columnAlreadyExists.
+	for _, alter := range []string{
+		`ALTER TABLE memories ADD COLUMN rating INTEGER`,
+		`ALTER TABLE memories ADD COLUMN rating_comment TEXT`,
+		`ALTER TABLE memories ADD COLUMN category TEXT`,
+	} {
+		if _, err := s.db.ExecContext(ctx, alter); err != nil && !columnAlreadyExists(err) {
+			return fmt.Errorf("migrate memory columns: %w: %s", err, alter)
+		}
+	}
+
+	// Indexes that depend on migrated columns. CREATE INDEX IF NOT EXISTS
+	// is idempotent; safe to run on every boot. Must run AFTER the ALTER
+	// migrations above — on a pre-category DB the column doesn't exist
+	// until the ALTER runs, and CREATE INDEX over a missing column
+	// errors immediately.
+	postMigrationIndexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_memories_project_category ON memories(project_id, category)`,
+	}
+	for _, idx := range postMigrationIndexes {
+		if _, err := s.db.ExecContext(ctx, idx); err != nil {
+			return fmt.Errorf("apply post-migration index: %w: %s", err, idx)
+		}
 	}
 
 	// Populate the FTS index on first run (the virtual table was just
@@ -406,7 +562,7 @@ func (s *Store) columnExists(ctx context.Context, table, column string) (bool, e
 
 // Watermark returns the last event filename processed for the given project,
 // or "" if no reconcile has run yet for this project. Filenames in
-// .yullu/events/ sort lexically by time, so callers can skip any event
+// .yullu/logs/ sort lexically by time, so callers can skip any event
 // file <= the watermark on the next reconcile pass.
 func (s *Store) Watermark(ctx context.Context, projectID string) (string, error) {
 	v, _, err := s.getMeta(ctx, watermarkKey(projectID))
@@ -445,7 +601,7 @@ func (s *Store) setMeta(ctx context.Context, key, value string) error {
 // also appears in event log entries - callers (the MCP handler, the event
 // applier) generate it before writing the corresponding create event so the
 // event and the row stay correlated. Pass "" to have one generated.
-func (s *Store) Insert(ctx context.Context, memoryUUID, projectID, content string, tags []string, vector []float32) (int64, error) {
+func (s *Store) Insert(ctx context.Context, memoryUUID, projectID, content string, tags []string, vector []float32, category MemoryCategory) (int64, error) {
 	if len(vector) != s.dim {
 		return 0, fmt.Errorf("vector dim %d != expected %d", len(vector), s.dim)
 	}
@@ -458,6 +614,14 @@ func (s *Store) Insert(ctx context.Context, memoryUUID, projectID, content strin
 	}
 	now := time.Now().Unix()
 
+	// Refuse to store an unknown category — better to write NULL and
+	// surface the memory as "uncategorised" in the Review queue than to
+	// pollute the enum with reasoner typos.
+	var catCol sql.NullString
+	if category != "" && IsValidCategory(category) {
+		catCol = sql.NullString{String: string(category), Valid: true}
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -465,8 +629,8 @@ func (s *Store) Insert(ctx context.Context, memoryUUID, projectID, content strin
 	defer func() { _ = tx.Rollback() }()
 
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO memories(uuid, project_id, content, tags_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		memoryUUID, projectID, content, string(tagsJSON), now, now)
+		`INSERT INTO memories(uuid, project_id, content, tags_json, created_at, updated_at, category) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		memoryUUID, projectID, content, string(tagsJSON), now, now, catCol)
 	if err != nil {
 		return 0, err
 	}
@@ -586,7 +750,7 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 // events keyed on UUID without round-tripping through int IDs.
 func (s *Store) GetByUUID(ctx context.Context, memoryUUID string) (*Memory, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, uuid, project_id, content, tags_json, created_at, updated_at FROM memories WHERE uuid = ?`, memoryUUID)
+		`SELECT id, uuid, project_id, content, tags_json, created_at, updated_at, rating, rating_comment, category FROM memories WHERE uuid = ?`, memoryUUID)
 	m, err := scanMemory(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -600,7 +764,7 @@ func (s *Store) GetByUUID(ctx context.Context, memoryUUID string) (*Memory, erro
 // Get returns a single memory by ID.
 func (s *Store) Get(ctx context.Context, id int64) (*Memory, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, uuid, project_id, content, tags_json, created_at, updated_at FROM memories WHERE id = ?`, id)
+		`SELECT id, uuid, project_id, content, tags_json, created_at, updated_at, rating, rating_comment, category FROM memories WHERE id = ?`, id)
 	m, err := scanMemory(row)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -613,9 +777,23 @@ func (s *Store) Get(ctx context.Context, id int64) (*Memory, error) {
 
 // ListProjects returns every project_id that has at least one memory.
 // Used by the desktop app to populate a project picker.
+// ListProjects returns every project_id that has any activity recorded
+// against it — memories OR buffered session messages OR completed dream
+// passes. We union across all three sources so a project shows up in the
+// sidebar the moment the user starts working in it, not just after the
+// first dream pass creates a memory.
+//
+// Previously this only queried `memories`, which meant a freshly-recording
+// project (lots of buffered turns, no dreams yet) was invisible — the
+// sidebar dropdown was empty while the Dream buffer card showed messages.
 func (s *Store) ListProjects(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT DISTINCT project_id FROM memories ORDER BY project_id`)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT project_id FROM memories
+		UNION
+		SELECT project_id FROM session_messages
+		UNION
+		SELECT project_id FROM dream_passes
+		ORDER BY project_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -625,6 +803,9 @@ func (s *Store) ListProjects(ctx context.Context) ([]string, error) {
 		var p string
 		if err := rows.Scan(&p); err != nil {
 			return nil, err
+		}
+		if p == "" {
+			continue
 		}
 		out = append(out, p)
 	}
@@ -636,7 +817,7 @@ func (s *Store) ListProjects(ctx context.Context) ([]string, error) {
 // older memories get earlier filenames when their create events are written.
 func (s *Store) ListAll(ctx context.Context, projectID string) ([]Memory, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, uuid, project_id, content, tags_json, created_at, updated_at
+		`SELECT id, uuid, project_id, content, tags_json, created_at, updated_at, rating, rating_comment, category
 		 FROM memories WHERE project_id = ? ORDER BY created_at ASC, id ASC`,
 		projectID)
 	if err != nil {
@@ -667,11 +848,11 @@ func (s *Store) List(ctx context.Context, projectID string, limit int) ([]Memory
 	)
 	if projectID == "" {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, uuid, project_id, content, tags_json, created_at, updated_at
+			`SELECT id, uuid, project_id, content, tags_json, created_at, updated_at, rating, rating_comment, category
 			 FROM memories ORDER BY updated_at DESC LIMIT ?`, limit)
 	} else {
 		rows, err = s.db.QueryContext(ctx,
-			`SELECT id, uuid, project_id, content, tags_json, created_at, updated_at
+			`SELECT id, uuid, project_id, content, tags_json, created_at, updated_at, rating, rating_comment, category
 			 FROM memories WHERE project_id = ? ORDER BY updated_at DESC LIMIT ?`,
 			projectID, limit)
 	}
@@ -686,6 +867,151 @@ func (s *Store) List(ctx context.Context, projectID string, limit int) ([]Memory
 			return nil, err
 		}
 		out = append(out, *m)
+	}
+	return out, rows.Err()
+}
+
+// ListUnrated returns memories awaiting a user rating, newest first.
+// Powers the dedicated "Review" queue — the only memories the UI shows
+// here are ones the user hasn't explicitly scored yet. Memories that
+// have been rated (and survived, i.e. > 5) drop out of this list.
+func (s *Store) ListUnrated(ctx context.Context, projectID string, limit int) ([]Memory, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, uuid, project_id, content, tags_json, created_at, updated_at, rating, rating_comment, category
+		 FROM memories
+		 WHERE project_id = ? AND rating IS NULL
+		 ORDER BY created_at DESC, id DESC
+		 LIMIT ?`,
+		projectID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Memory
+	for rows.Next() {
+		m, err := scanMemory(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *m)
+	}
+	return out, rows.Err()
+}
+
+// RateMemory applies a user rating. Two branches:
+//
+//   - rating ≤ 5 → the memory is a bad example. Copy it to
+//     rejected_memories (preserving the comment so future dream passes
+//     can show it as an anti-example), then DELETE the row from
+//     `memories`. The cascade triggers on memories delete the FTS row
+//     and we manually delete the vector below.
+//   - rating ≥ 6 → write rating + comment onto the existing row.
+//
+// Both paths run in a single transaction so a partial failure leaves
+// the DB consistent.
+func (s *Store) RateMemory(ctx context.Context, id int64, rating int, comment string) error {
+	if rating < 1 || rating > 10 {
+		return fmt.Errorf("rating must be 1..10, got %d", rating)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if rating > 5 {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE memories SET rating = ?, rating_comment = ?, updated_at = ?
+			 WHERE id = ?`,
+			rating, comment, time.Now().Unix(), id)
+		if err != nil {
+			return fmt.Errorf("update rating: %w", err)
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return fmt.Errorf("memory %d not found", id)
+		}
+		return tx.Commit()
+	}
+
+	// rating ≤ 5: rejection path. Read the row, copy to rejected_memories,
+	// delete from memories + memory_vectors (the FTS triggers handle their
+	// own cleanup). project_id is needed for the rejected table scope.
+	var (
+		projectID string
+		content   string
+		tagsJSON  string
+	)
+	if err := tx.QueryRowContext(ctx,
+		`SELECT project_id, content, tags_json FROM memories WHERE id = ?`, id,
+	).Scan(&projectID, &content, &tagsJSON); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("memory %d not found", id)
+		}
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO rejected_memories(project_id, content, tags_json, rating, comment, rejected_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		projectID, content, tagsJSON, rating, comment, time.Now().Unix(),
+	); err != nil {
+		return fmt.Errorf("archive rejection: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_vectors WHERE memory_id = ?`, id); err != nil {
+		return fmt.Errorf("delete vector: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memories WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("delete memory: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// Log the rejection as a "deleted" memory event so the stats dashboard
+	// counts it alongside other deletions. The rejection table is the
+	// durable record; memory_events is the observability stream.
+	s.recordMemoryEvent(ctx, EventDeleted, id, projectID,
+		map[string]any{"via": "rating", "rating": rating})
+	return nil
+}
+
+// RecentRejected returns the N most recently rejected memories for the
+// project, newest first. The dream reasoner injects these into its user
+// prompt as concrete "do not produce memories like these" examples so
+// the bad-example signal flows back into future passes.
+func (s *Store) RecentRejected(ctx context.Context, projectID string, limit int) ([]RejectedMemory, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, project_id, content, tags_json, rating, comment, rejected_at
+		 FROM rejected_memories
+		 WHERE project_id = ?
+		 ORDER BY rejected_at DESC, id DESC
+		 LIMIT ?`,
+		projectID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RejectedMemory
+	for rows.Next() {
+		var (
+			r        RejectedMemory
+			tagsJSON string
+			at       int64
+			comment  sql.NullString
+		)
+		if err := rows.Scan(&r.ID, &r.ProjectID, &r.Content, &tagsJSON, &r.Rating, &comment, &at); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(tagsJSON), &r.Tags)
+		if comment.Valid {
+			r.Comment = comment.String
+		}
+		r.RejectedAt = time.Unix(at, 0)
+		out = append(out, r)
 	}
 	return out, rows.Err()
 }
@@ -733,7 +1059,7 @@ func (s *Store) SearchText(ctx context.Context, projectID, query string, limit i
 	}
 
 	sqlText := `
-		SELECT m.id, m.uuid, m.project_id, m.content, m.tags_json, m.created_at, m.updated_at
+		SELECT m.id, m.uuid, m.project_id, m.content, m.tags_json, m.created_at, m.updated_at, m.rating, m.rating_comment, m.category
 		FROM memories_fts
 		JOIN memories m ON m.id = memories_fts.rowid
 		WHERE memories_fts MATCH ?`
@@ -796,7 +1122,19 @@ func sanitizeFTSQuery(input string) string {
 	return b.String()
 }
 
-func (s *Store) Search(ctx context.Context, projectID string, query []float32, k int) ([]Memory, error) {
+// Search runs the vector KNN query, optionally filtered by category.
+// categories is an OR set — passing {process, style} returns memories
+// matching EITHER. Empty means no filter (every category, including
+// uncategorised). Invalid categories are silently dropped so a typo
+// from the caller can't crash the request.
+//
+// Over-fetch logic: vec0 KNN doesn't honor WHERE clauses on joined
+// tables efficiently, so we ask for more rows than k and filter in Go.
+// When a category filter is active we over-fetch more aggressively
+// because the top-k by vector distance might mostly be wrong-category;
+// without the bump the user can ask for k=5 style memories and get 2
+// back because 3 of the top-5 nearest were process memories.
+func (s *Store) Search(ctx context.Context, projectID string, query []float32, k int, categories []MemoryCategory) ([]Memory, error) {
 	if len(query) != s.dim {
 		return nil, fmt.Errorf("query dim %d != expected %d", len(query), s.dim)
 	}
@@ -807,21 +1145,58 @@ func (s *Store) Search(ctx context.Context, projectID string, query []float32, k
 	if err != nil {
 		return nil, err
 	}
-	// Over-fetch a bit then filter by project_id, because vec0 KNN doesn't
-	// accept arbitrary WHERE clauses against joined tables efficiently.
+
+	// Validate + dedupe categories. Invalid entries are dropped silently
+	// so a caller passing a string like "style,bogus" still gets the
+	// "style" results instead of a hard error.
+	validCats := make([]MemoryCategory, 0, len(categories))
+	seen := make(map[MemoryCategory]bool, len(categories))
+	for _, c := range categories {
+		if !IsValidCategory(c) || seen[c] {
+			continue
+		}
+		seen[c] = true
+		validCats = append(validCats, c)
+	}
+
+	// Over-fetch ceiling — bumped when filtering. The 8x factor with a
+	// hard cap of 256 keeps the in-memory filter cheap even on a project
+	// with thousands of memories.
 	overK := k * 4
+	if len(validCats) > 0 {
+		overK = k * 8
+	}
 	if overK < 32 {
 		overK = 32
 	}
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT m.id, m.uuid, m.project_id, m.content, m.tags_json, m.created_at, m.updated_at, v.distance
+	if overK > 256 {
+		overK = 256
+	}
+
+	// Build the SQL with an optional IN clause for category filter. vec0
+	// requires the MATCH + k literal before our additional predicates.
+	sqlText := `
+		SELECT m.id, m.uuid, m.project_id, m.content, m.tags_json, m.created_at, m.updated_at, m.category, v.distance
 		FROM memory_vectors v
 		JOIN memories m ON m.id = v.memory_id
 		WHERE v.embedding MATCH ?
 		  AND m.project_id = ?
-		  AND k = ?
+		  AND k = ?`
+	args := []any{blob, projectID, overK}
+	if len(validCats) > 0 {
+		placeholders := make([]string, len(validCats))
+		for i, c := range validCats {
+			placeholders[i] = "?"
+			args = append(args, string(c))
+		}
+		sqlText += ` AND m.category IN (` + strings.Join(placeholders, ",") + `)`
+	}
+	sqlText += `
 		ORDER BY v.distance
-		LIMIT ?`, blob, projectID, overK, k)
+		LIMIT ?`
+	args = append(args, k)
+
+	rows, err := s.db.QueryContext(ctx, sqlText, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -833,14 +1208,18 @@ func (s *Store) Search(ctx context.Context, projectID string, query []float32, k
 			tagsJSON string
 			created  int64
 			updated  int64
+			category sql.NullString
 			dist     float64
 		)
-		if err := rows.Scan(&m.ID, &m.UUID, &m.ProjectID, &m.Content, &tagsJSON, &created, &updated, &dist); err != nil {
+		if err := rows.Scan(&m.ID, &m.UUID, &m.ProjectID, &m.Content, &tagsJSON, &created, &updated, &category, &dist); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(tagsJSON), &m.Tags)
 		m.CreatedAt = time.Unix(created, 0)
 		m.UpdatedAt = time.Unix(updated, 0)
+		if category.Valid {
+			m.Category = MemoryCategory(category.String)
+		}
 		m.Score = dist
 		out = append(out, m)
 	}
@@ -860,17 +1239,30 @@ type scanner interface {
 
 func scanMemory(s scanner) (*Memory, error) {
 	var (
-		m        Memory
-		tagsJSON string
-		created  int64
-		updated  int64
+		m         Memory
+		tagsJSON  string
+		created   int64
+		updated   int64
+		rating    sql.NullInt64
+		ratingCmt sql.NullString
+		category  sql.NullString
 	)
-	if err := s.Scan(&m.ID, &m.UUID, &m.ProjectID, &m.Content, &tagsJSON, &created, &updated); err != nil {
+	if err := s.Scan(&m.ID, &m.UUID, &m.ProjectID, &m.Content, &tagsJSON, &created, &updated, &rating, &ratingCmt, &category); err != nil {
 		return nil, err
 	}
 	_ = json.Unmarshal([]byte(tagsJSON), &m.Tags)
 	m.CreatedAt = time.Unix(created, 0)
 	m.UpdatedAt = time.Unix(updated, 0)
+	if rating.Valid {
+		r := int(rating.Int64)
+		m.Rating = &r
+	}
+	if ratingCmt.Valid {
+		m.RatingComment = ratingCmt.String
+	}
+	if category.Valid {
+		m.Category = MemoryCategory(category.String)
+	}
 	return &m, nil
 }
 
@@ -1441,6 +1833,29 @@ func (s *Store) CountSessionMessages(ctx context.Context, projectID string) (ses
 	return
 }
 
+// PendingMessageProjects returns every distinct project_id that has at
+// least one buffered session message. Powers the scheduler's per-project
+// poll: rather than dream the server's own CWD, the scheduler enumerates
+// every project with pending work and considers each on its own timer.
+func (s *Store) PendingMessageProjects(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT project_id FROM session_messages
+		 WHERE project_id != '' ORDER BY project_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
 // SessionsWithMessages returns session IDs (for projectID) that currently
 // have at least minMessages stored messages. Pass 0 or 1 to get every
 // session with any messages. Used by the dreamer to find work.
@@ -1470,14 +1885,35 @@ func (s *Store) SessionsWithMessages(ctx context.Context, projectID string, minM
 	return out, rows.Err()
 }
 
-// SessionMessages returns every message for sessionID ordered chronologically.
-// The dreamer captures this snapshot, feeds it to the reasoner, then deletes
-// the same IDs once ops have been applied.
-func (s *Store) SessionMessages(ctx context.Context, sessionID string) ([]SessionMessage, error) {
+// sessionMessagesPerPassCap bounds how many session_messages rows a
+// single SessionMessages call returns. The dreamer feeds these straight
+// into a reasoner prompt; an extremely long Claude Code session could
+// otherwise materialise megabytes into a Go slice and a single LLM
+// request. 500 turns is well past anything a single dream pass should
+// have to summarise — earlier turns will have already been processed by
+// previous passes (which delete their rows). Acts as a belt-and-braces
+// memory ceiling, not a primary correctness mechanism.
+const sessionMessagesPerPassCap = 500
+
+// SessionMessages returns the messages for (projectID, sessionID) in
+// chronological order. The project filter is load-bearing: one Claude Code
+// session can span several repos, so a session_id alone is NOT a project
+// boundary. Without the project filter, a dream pass for project A would
+// hand the reasoner messages from project B and create cross-contaminated
+// memories.
+//
+// Capped at sessionMessagesPerPassCap rows. The cap is "oldest first" —
+// if a session has more than that, we return the OLDEST cap (not the
+// newest), because the dreamer cleans up rows after processing, so any
+// build-up of unprocessed rows is at the tail of the buffer and the
+// older ones are what we want to drain first.
+func (s *Store) SessionMessages(ctx context.Context, projectID, sessionID string) ([]SessionMessage, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, session_id, project_id, role, content, at
-		 FROM session_messages WHERE session_id = ? ORDER BY at ASC, id ASC`,
-		sessionID)
+		 FROM session_messages WHERE project_id = ? AND session_id = ?
+		 ORDER BY at ASC, id ASC
+		 LIMIT ?`,
+		projectID, sessionID, sessionMessagesPerPassCap)
 	if err != nil {
 		return nil, err
 	}
@@ -1520,7 +1956,7 @@ func (s *Store) DeleteSessionMessages(ctx context.Context, ids []int64) error {
 
 // RecordSessionMessages appends conversation turns for a given session.
 // Used by the record_messages MCP tool. Messages live in the local DB only;
-// they're never pushed to .yullu/events/.
+// they're never pushed to .yullu/logs/.
 func (s *Store) RecordSessionMessages(ctx context.Context, projectID, sessionID string, msgs []SessionMessageInput) error {
 	if len(msgs) == 0 {
 		return nil
@@ -1718,6 +2154,69 @@ func (s *Store) RecordDreamPass(ctx context.Context, rec DreamPassRecord) {
 	}
 }
 
+// DreamPass is one row from the dream_passes table — the per-cycle
+// detail the Stats page renders alongside the aggregate totals. Errors
+// is the raw JSON array surfaced as a slice; nil when the pass had none.
+type DreamPass struct {
+	ID                int64     `json:"id"`
+	ProjectID         string    `json:"project_id"`
+	At                time.Time `json:"at"`
+	SessionsProcessed int       `json:"sessions_processed"`
+	MessagesProcessed int       `json:"messages_processed"`
+	OpsCreated        int       `json:"ops_created"`
+	OpsUpdated        int       `json:"ops_updated"`
+	OpsDeleted        int       `json:"ops_deleted"`
+	OpsSkipped        int       `json:"ops_skipped"`
+	Errors            []string  `json:"errors,omitempty"`
+}
+
+// ListDreamPasses returns the most recent dream passes for projectID,
+// newest first. Powers the Stats page's per-cycle table. projectID == ""
+// spans every project.
+func (s *Store) ListDreamPasses(ctx context.Context, projectID string, limit int) ([]DreamPass, error) {
+	if limit <= 0 {
+		limit = 30
+	}
+	q := `SELECT id, project_id, at, sessions_processed, messages_processed,
+		         ops_created, ops_updated, ops_deleted, ops_skipped, errors_json
+		  FROM dream_passes`
+	args := []any{}
+	if projectID != "" {
+		q += ` WHERE project_id = ?`
+		args = append(args, projectID)
+	}
+	q += ` ORDER BY at DESC, id DESC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []DreamPass
+	for rows.Next() {
+		var (
+			p       DreamPass
+			at      int64
+			errJSON sql.NullString
+		)
+		if err := rows.Scan(
+			&p.ID, &p.ProjectID, &at,
+			&p.SessionsProcessed, &p.MessagesProcessed,
+			&p.OpsCreated, &p.OpsUpdated, &p.OpsDeleted, &p.OpsSkipped,
+			&errJSON,
+		); err != nil {
+			return nil, err
+		}
+		p.At = time.Unix(at, 0)
+		if errJSON.Valid && errJSON.String != "" && errJSON.String != "[]" {
+			_ = json.Unmarshal([]byte(errJSON.String), &p.Errors)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // DreamStats is the dashboard view of dream-pass activity over a window.
 // LastPassAt is omitted from JSON when no passes ran in the window (the
 // zero time.Time value), so clients can use absence as the empty signal
@@ -1781,6 +2280,16 @@ func (s *Store) DreamStats(ctx context.Context, projectID string, days int) (Dre
 		ds.LastPassAt = time.Unix(lastAt, 0)
 	}
 	return ds, nil
+}
+
+// columnAlreadyExists reports whether err is SQLite's "duplicate column name"
+// error from an idempotent ALTER TABLE ADD COLUMN. Used so each boot can
+// re-run the migration without crashing on already-migrated DBs.
+func columnAlreadyExists(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "duplicate column name")
 }
 
 // MustDefaultDBPath returns the OS-appropriate default database path and

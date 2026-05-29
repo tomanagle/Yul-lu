@@ -44,6 +44,19 @@ type Server struct {
 	// trigger of the dream scheduler.
 	dreamStateMu          sync.Mutex
 	lastMessageRecordedAt time.Time
+	// dreamProgressMu guards dreamProgress, the live-progress snapshot
+	// the UI polls via /api/dream/progress. Held briefly per mutation —
+	// never across reasoner calls — so the HTTP handler never stalls.
+	dreamProgressMu sync.Mutex
+	dreamProgress   DreamProgress
+	// lastScheduledDreamAt is when the scheduler last *fired* a pass for
+	// each project (not manual / dream_now calls). Used by
+	// DreamProgressSnapshot to compute the next-interval trigger per
+	// project. Tracked per-project because the scheduler polls every
+	// project with pending messages and decides independently — a busy
+	// project shouldn't reset the interval clock for a quiet one.
+	lastScheduledDreamAtMu sync.Mutex
+	lastScheduledDreamAt   map[string]time.Time
 	// projectCfgMu guards the resolved-config cache.
 	projectCfgMu sync.RWMutex
 	projectCfg   map[string]config.Config
@@ -59,12 +72,13 @@ func New(s *store.Store, e ai.Embedder, r ai.Reasoner, cfg config.Config, logger
 			"0.1.0",
 			mcpsrv.WithToolCapabilities(true),
 		),
-		store:      s,
-		embedder:   e,
-		reasoner:   r,
-		cfg:        cfg,
-		logger:     logger.With("component", "server"),
-		projectCfg: make(map[string]config.Config),
+		store:                s,
+		embedder:             e,
+		reasoner:             r,
+		cfg:                  cfg,
+		logger:               logger.With("component", "server"),
+		projectCfg:           make(map[string]config.Config),
+		lastScheduledDreamAt: make(map[string]time.Time),
 	}
 	// Advertise sampling so clients (Claude Code, Codex, Cursor) know we may
 	// ask them to run LLM completions on our behalf. The dreamer uses this
@@ -77,9 +91,9 @@ func New(s *store.Store, e ai.Embedder, r ai.Reasoner, cfg config.Config, logger
 			srv.writer = memlog.NewWriter(scope.GitRoot(cwd), cfg.Sync.Dir)
 		}
 		if srv.writer == nil {
-			srv.logger.Warn("sync enabled but no git repo found; events will not be logged", "cwd", cwd)
+			srv.logger.Warn("sync enabled but no git repo found; memory log will not be written", "cwd", cwd)
 		} else {
-			srv.logger.Info("event log initialised", "dir", srv.writer.Dir())
+			srv.logger.Info("memory log initialised", "dir", srv.writer.Dir())
 		}
 	}
 	srv.registerTools()
@@ -166,17 +180,21 @@ func (s *Server) MCPHandler() http.Handler {
 
 func (s *Server) registerTools() {
 	s.mcp.AddTool(mcp.NewTool("store_memory",
-		mcp.WithDescription("Save a memory (decision, gotcha, pattern, project fact) so future sessions in this codebase can recall it. Scoped automatically to the current git repo unless project_id is provided."),
-		mcp.WithString("content", mcp.Required(), mcp.Description("The memory text to store. Be specific and self-contained - include the why, not just the what.")),
-		mcp.WithArray("tags", mcp.WithStringItems(), mcp.Description("Optional tags for filtering/listing.")),
-		mcp.WithString("project_id", mcp.Description("Override project scope. Defaults to the git root containing the server's working directory.")),
+		mcp.WithDescription("Save a memory so future sessions in this codebase can recall it. Scoped automatically to the current git repo unless project_id is provided. ALWAYS classify with one of the five categories so the agent can retrieve only the kinds of facts relevant to its task."),
+		mcp.WithString("content", mcp.Required(), mcp.Description("The memory text to store. Be specific and self-contained - include the why, not just the what, in forward-looking voice.")),
+		mcp.WithString("category", mcp.Description("One of: 'process' (how to do things - commands, conventions, layout), 'decision' (why X was chosen over Y), 'gotcha' (non-obvious constraints, what bites), 'domain' (what words mean here, invariants), 'style' (UI patterns, copy tone, visual language). Required for useful retrieval — omit only when the category is genuinely unclear and you want the user to triage it.")),
+		mcp.WithArray("tags", mcp.WithStringItems(), mcp.Description("Optional free-form tags for filtering/listing.")),
+		mcp.WithString("project_id", mcp.Description("Override project scope. Defaults to the git root containing the caller's cwd (or the server's cwd if neither cwd nor project_id is set).")),
+		mcp.WithString("cwd", mcp.Description("Caller's working directory. Without this the server falls back to its own cwd — almost never what you want.")),
 	), s.handleStore)
 
 	s.mcp.AddTool(mcp.NewTool("retrieve_memories",
-		mcp.WithDescription("Semantically search memories for the current project. Returns the top matches by embedding similarity."),
+		mcp.WithDescription("Semantically search memories for the current project. Returns the top matches by embedding similarity, optionally filtered to one or more categories. Filter to the categories that match the task you're about to do — process/style for writing or modifying code, decision/gotcha for changing existing behaviour, domain when you have to ask what a term means."),
 		mcp.WithString("query", mcp.Required(), mcp.Description("Natural-language query - the question or topic you want context on.")),
 		mcp.WithNumber("limit", mcp.Description("Max results to return (default 5).")),
+		mcp.WithArray("categories", mcp.WithStringItems(), mcp.Description("Optional filter. One or more of: 'process' (how to do things), 'decision' (why X was chosen), 'gotcha' (what bites), 'domain' (what terms mean), 'style' (UI patterns + tone). Omit for no filter (every category). Unknown values are dropped silently.")),
 		mcp.WithString("project_id", mcp.Description("Override project scope.")),
+		mcp.WithString("cwd", mcp.Description("Caller's working directory; used to resolve the project when project_id isn't set.")),
 	), s.handleRetrieve)
 
 	s.mcp.AddTool(mcp.NewTool("update_memory",
@@ -195,19 +213,22 @@ func (s *Server) registerTools() {
 		mcp.WithDescription("List the most recently updated memories for the current project. Useful when you want an overview rather than a search."),
 		mcp.WithNumber("limit", mcp.Description("Max results to return (default 20).")),
 		mcp.WithString("project_id", mcp.Description("Override project scope.")),
+		mcp.WithString("cwd", mcp.Description("Caller's working directory; used to resolve the project when project_id isn't set.")),
 	), s.handleList)
 
 	s.mcp.AddTool(mcp.NewTool("dream_now",
-		mcp.WithDescription("Trigger a dream pass immediately. yullu asks its reasoner to review recorded session messages and extract durable memories (create/update/delete operations are applied via the normal write paths, so dreamed changes show up in .yullu/events/). Defaults to dreaming every session for the current project; pass session_id to limit to one."),
+		mcp.WithDescription("Trigger a dream pass immediately. yullu asks its reasoner to review recorded session messages and extract durable memories (remember/revise/forget operations are applied via the normal write paths, so dreamed changes show up in .yullu/logs/). Defaults to dreaming every session for the current project; pass session_id to limit to one."),
 		mcp.WithString("session_id", mcp.Description("Optional session_id to dream just that one session.")),
 		mcp.WithString("project_id", mcp.Description("Override project scope. Defaults to the git remote.")),
+		mcp.WithString("cwd", mcp.Description("Caller's working directory; used to resolve the project when project_id isn't set.")),
 	), s.handleDreamNow)
 
 	s.mcp.AddTool(mcp.NewTool("record_messages",
-		mcp.WithDescription("Record conversation turns into the dream buffer. Call after each user-assistant exchange so yullu can later 'dream' over them and extract durable memories (decisions, gotchas, project facts) without the human having to flag them explicitly. The raw messages are stored locally only - they are never published to .yullu/events/."),
+		mcp.WithDescription("Record conversation turns into the dream buffer. Call after each user-assistant exchange so yullu can later 'dream' over them and extract durable memories (decisions, gotchas, project facts) without the human having to flag them explicitly. The raw messages are stored locally only - they are never published to .yullu/logs/."),
 		mcp.WithString("session_id", mcp.Required(), mcp.Description("A stable string identifying this chat conversation. Use the same value across turns within one chat (any unique-per-chat string works - a UUID, a timestamp, etc.).")),
 		mcp.WithArray("messages", mcp.Required(), mcp.Description("Array of objects with keys 'role' ('user' or 'assistant') and 'content' (the message text).")),
-		mcp.WithString("project_id", mcp.Description("Override project scope. Defaults to the git remote of the server's working directory.")),
+		mcp.WithString("project_id", mcp.Description("Override project scope. Defaults to the git remote of the caller's cwd (or the server's cwd if neither cwd nor project_id is set).")),
+		mcp.WithString("cwd", mcp.Description("Caller's working directory. The server uses this to resolve the project — without it, the project defaults to whatever directory yullu was launched from, which is almost never what you want.")),
 	), s.handleRecordMessages)
 
 	s.mcp.AddTool(mcp.NewTool("reconcile_memories",
@@ -222,9 +243,24 @@ func (s *Server) registerTools() {
 	), s.handleUsage)
 }
 
-func (s *Server) resolveProjectID(override string) (string, error) {
+// resolveProjectID picks the project for an incoming call. Priority:
+//
+//  1. explicit override (caller passed project_id)
+//  2. caller cwd (the dir the user is actually working in — the Stop
+//     hook forwards Claude Code's cwd, MCP clients can pass it too)
+//  3. server's own cwd (last resort; this is the dir yullu was launched
+//     from, so it's almost always wrong for hook-driven calls — leaving
+//     it as a fallback only so direct `yullu` CLI invocations still work)
+//
+// Bug history: priority 3 used to be the ONLY behaviour, which meant
+// every Stop-hook POST resolved to yullu's own repo regardless of where
+// the user was working.
+func (s *Server) resolveProjectID(override, callerCwd string) (string, error) {
 	if override != "" {
 		return override, nil
+	}
+	if callerCwd != "" {
+		return scope.Resolve(callerCwd)
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -260,11 +296,16 @@ func (s *Server) handleStore(ctx context.Context, req mcp.CallToolRequest) (*mcp
 	}
 	tags := req.GetStringSlice("tags", nil)
 	projectOverride := req.GetString("project_id", "")
-	projectID, err := s.resolveProjectID(projectOverride)
+	callerCwd := req.GetString("cwd", "")
+	// Category is optional via MCP — clients that don't classify (older
+	// integrations, terse calls) get an empty value and the memory shows
+	// up uncategorised in the Review queue.
+	category := store.MemoryCategory(req.GetString("category", ""))
+	projectID, err := s.resolveProjectID(projectOverride, callerCwd)
 	if err != nil {
 		return mcp.NewToolResultErrorFromErr("resolve project", err), nil
 	}
-	memUUID, id, err := s.createMemory(ctx, projectID, content, tags)
+	memUUID, id, err := s.createMemory(ctx, projectID, content, tags, category)
 	if err != nil {
 		return mcp.NewToolResultErrorFromErr("create", err), nil
 	}
@@ -278,7 +319,9 @@ func (s *Server) handleStore(ctx context.Context, req mcp.CallToolRequest) (*mcp
 // createMemory is the shared write path used by store_memory and the dreamer.
 // Embeds content, writes the create event (with our vector if log_embeddings),
 // then inserts the row. Returns the new memory's UUID and local ID.
-func (s *Server) createMemory(ctx context.Context, projectID, content string, tags []string) (string, int64, error) {
+// category may be empty (memory will be uncategorised; user can fix in
+// the Review queue) or one of the canonical MemoryCategory values.
+func (s *Server) createMemory(ctx context.Context, projectID, content string, tags []string, category store.MemoryCategory) (string, int64, error) {
 	vecs, err := s.embedder.Embed(ctx, []string{content})
 	if err != nil {
 		return "", 0, fmt.Errorf("embed: %w", err)
@@ -287,11 +330,11 @@ func (s *Server) createMemory(ctx context.Context, projectID, content string, ta
 		return "", 0, fmt.Errorf("embedder returned %d vectors, expected 1", len(vecs))
 	}
 	memUUID := uuid.NewString()
-	event := memlog.NewCreateEvent(memUUID, content, tags, s.ownVectors(vecs[0]))
+	event := memlog.NewRememberEvent(memUUID, content, tags, s.ownVectors(vecs[0]))
 	if err := s.logEvent(event); err != nil {
 		return "", 0, fmt.Errorf("log create event: %w", err)
 	}
-	id, err := s.store.Insert(ctx, memUUID, projectID, content, tags, vecs[0])
+	id, err := s.store.Insert(ctx, memUUID, projectID, content, tags, vecs[0], category)
 	if err != nil {
 		return "", 0, fmt.Errorf("store insert: %w", err)
 	}
@@ -316,7 +359,7 @@ func (s *Server) updateMemoryByUUID(ctx context.Context, memUUID string, content
 		}
 		newVec = vecs[0]
 	}
-	event := memlog.NewUpdateEvent(memUUID, contentPtr, tagsPtr, s.ownVectors(newVec))
+	event := memlog.NewReviseEvent(memUUID, contentPtr, tagsPtr, s.ownVectors(newVec))
 	if err := s.logEvent(event); err != nil {
 		return nil, fmt.Errorf("log update event: %w", err)
 	}
@@ -335,7 +378,7 @@ func (s *Server) deleteMemoryByUUID(ctx context.Context, memUUID string) error {
 	if existing == nil {
 		return fmt.Errorf("memory %s not found", memUUID)
 	}
-	if err := s.logEvent(memlog.NewDeleteEvent(memUUID)); err != nil {
+	if err := s.logEvent(memlog.NewForgetEvent(memUUID)); err != nil {
 		return fmt.Errorf("log delete event: %w", err)
 	}
 	return s.store.Delete(ctx, existing.ID)
@@ -348,7 +391,15 @@ func (s *Server) handleRetrieve(ctx context.Context, req mcp.CallToolRequest) (*
 	}
 	limit := req.GetInt("limit", 5)
 	projectOverride := req.GetString("project_id", "")
-	projectID, err := s.resolveProjectID(projectOverride)
+	callerCwd := req.GetString("cwd", "")
+	// Category filter — Search validates + de-dupes, so we just lift the
+	// raw strings into the typed slice and pass through.
+	rawCats := req.GetStringSlice("categories", nil)
+	cats := make([]store.MemoryCategory, 0, len(rawCats))
+	for _, c := range rawCats {
+		cats = append(cats, store.MemoryCategory(c))
+	}
+	projectID, err := s.resolveProjectID(projectOverride, callerCwd)
 	if err != nil {
 		return mcp.NewToolResultErrorFromErr("resolve project", err), nil
 	}
@@ -357,7 +408,7 @@ func (s *Server) handleRetrieve(ctx context.Context, req mcp.CallToolRequest) (*
 	if err != nil {
 		return mcp.NewToolResultErrorFromErr("embed", err), nil
 	}
-	hits, err := s.store.Search(ctx, projectID, vecs[0], limit)
+	hits, err := s.store.Search(ctx, projectID, vecs[0], limit, cats)
 	if err != nil {
 		return mcp.NewToolResultErrorFromErr("search", err), nil
 	}
@@ -475,7 +526,8 @@ func (s *Server) handleRecordMessages(ctx context.Context, req mcp.CallToolReque
 	}
 
 	projectOverride := req.GetString("project_id", "")
-	projectID, err := s.resolveProjectID(projectOverride)
+	callerCwd := req.GetString("cwd", "")
+	projectID, err := s.resolveProjectID(projectOverride, callerCwd)
 	if err != nil {
 		return mcp.NewToolResultErrorFromErr("resolve project", err), nil
 	}
@@ -493,15 +545,18 @@ func (s *Server) handleRecordMessages(ctx context.Context, req mcp.CallToolReque
 
 // RecordSessionMessages is the non-MCP path into the session_messages
 // buffer. Used by the REST endpoint POST /api/messages (and therefore by
-// `yullu record-turn` from the Claude Code Stop hook). projectOverride may
-// be empty — in that case the server resolves the project from cwd via
-// scope.Resolve, same as the MCP tool does.
+// `yullu record-turn` from the Claude Code Stop hook). projectOverride
+// and callerCwd may both be empty; resolveProjectID walks the priority
+// chain (override → callerCwd → server cwd) to land on a project. The
+// Stop hook forwards Claude Code's cwd here so we don't end up scoping
+// every recorded turn to whatever directory yullu itself was launched
+// from.
 func (s *Server) RecordSessionMessages(
 	ctx context.Context,
-	projectOverride, sessionID string,
+	projectOverride, callerCwd, sessionID string,
 	msgs []store.SessionMessageInput,
 ) (string, error) {
-	projectID, err := s.resolveProjectID(projectOverride)
+	projectID, err := s.resolveProjectID(projectOverride, callerCwd)
 	if err != nil {
 		return "", fmt.Errorf("resolve project: %w", err)
 	}
@@ -538,7 +593,8 @@ func (s *Server) handleReconcile(ctx context.Context, _ mcp.CallToolRequest) (*m
 func (s *Server) handleList(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	limit := req.GetInt("limit", 20)
 	projectOverride := req.GetString("project_id", "")
-	projectID, err := s.resolveProjectID(projectOverride)
+	callerCwd := req.GetString("cwd", "")
+	projectID, err := s.resolveProjectID(projectOverride, callerCwd)
 	if err != nil {
 		return mcp.NewToolResultErrorFromErr("resolve project", err), nil
 	}

@@ -10,9 +10,13 @@
 import type { z } from "zod";
 
 import {
+  BufferedSessionsListSchema,
   ConfigViewSchema,
   DailyMemoryEventsListSchema,
   DailyUsageListSchema,
+  DreamPassesListSchema,
+  DreamProgressSchema,
+  DreamPromptViewSchema,
   DreamResultSchema,
   DreamStatsSchema,
   MemoriesListSchema,
@@ -111,6 +115,22 @@ export const UpdateMemory = (id: number, content: string, tags: string[]) =>
 
 export const DeleteMemory = (id: number) => rawRequest(`/api/memories/${id}`, { method: "DELETE" });
 
+// Review queue: list un-rated + submit a rating. The rate endpoint's
+// response is either the updated memory (rating ≥ 6) or {rejected: true}
+// (rating ≤ 5 → row deleted, anti-example archived). We treat both as
+// success and let the caller refetch the list.
+export const GetUnratedMemories = (projectID: string) => {
+  const params = new URLSearchParams();
+  if (projectID) params.set("project_id", projectID);
+  return requestList(MemoriesListSchema, `/api/memories/unrated?${params}`);
+};
+
+export const RateMemory = (id: number, rating: number, comment: string) =>
+  rawRequest(`/api/memories/${id}/rate`, {
+    method: "POST",
+    body: JSON.stringify({ rating, comment }),
+  });
+
 export const GetSessionStats = (projectID: string) => {
   const params = new URLSearchParams();
   if (projectID) params.set("project_id", projectID);
@@ -173,3 +193,28 @@ export const SaveProjectOverrides = (
     method: "POST",
     body: JSON.stringify({ repo, user }),
   });
+
+export const GetBufferedSessions = (projectID: string) => {
+  const params = new URLSearchParams();
+  if (projectID) params.set("project_id", projectID);
+  return requestList(BufferedSessionsListSchema, `/api/sessions?${params}`);
+};
+
+export const GetDreamPrompt = () =>
+  request(DreamPromptViewSchema, "/api/dream/prompt");
+
+export const SaveDreamPrompt = (prompt: string) =>
+  request(DreamPromptViewSchema, "/api/dream/prompt", {
+    method: "POST",
+    body: JSON.stringify({ prompt }),
+  });
+
+export const GetDreamProgress = () =>
+  request(DreamProgressSchema, "/api/dream/progress");
+
+export const GetDreamPasses = (projectID: string, limit = 30) => {
+  const params = new URLSearchParams();
+  if (projectID) params.set("project_id", projectID);
+  params.set("limit", String(limit));
+  return requestList(DreamPassesListSchema, `/api/dream/passes?${params}`);
+};

@@ -10,9 +10,12 @@ import (
 	"errors"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -41,6 +44,22 @@ func main() {
 			os.Exit(runStdio())
 		case "record-turn":
 			os.Exit(runRecordTurn())
+		case "inject":
+			os.Exit(runInject())
+		case "export":
+			// Subcommand of subcommand: `yullu export agents-md [...]`.
+			// Future exports (e.g. `yullu export json`) slot in here.
+			if len(os.Args) < 3 {
+				println("yullu export: missing format. Try `yullu export agents-md`.")
+				os.Exit(2)
+			}
+			switch os.Args[2] {
+			case "agents-md":
+				os.Exit(runExportAgentsMD(os.Args[3:]))
+			default:
+				println("yullu export: unknown format:", os.Args[2])
+				os.Exit(2)
+			}
 		case "version", "--version", "-v":
 			println("Yul'lu " + version)
 			return
@@ -82,7 +101,13 @@ func main() {
 		DreamStats:           app,
 		ProjectOverrides:     app,
 		Messages:             app,
-		DreamContextMemories: app.cfg.Dreaming.ContextMemories,
+		SessionBuffer:        app,
+		DreamPrompt:          app,
+		DreamProgress:        app,
+		DreamPasses:          app.store,
+		Rater:                app,
+		Recall:               app,
+		DreamContextMemories: app.DreamContextMemories,
 	})
 	mux.Handle("/mcp", mcpProxy{app: app})
 	mux.Handle("/mcp/", mcpProxy{app: app})
@@ -101,13 +126,74 @@ func main() {
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
+	// Bind the listener before opening the browser so the kernel queues
+	// the browser's first connection while Serve is still spinning up —
+	// no curl-polling, no "connection refused" race.
+	ln, err := net.Listen("tcp", httpAddr)
+	if err != nil {
+		log.Fatalf("listen: %v", err)
+	}
+
 	app.logger.Info("yul'lu starting",
 		"url", "http://localhost"+httpAddr,
 		"mcp", "http://localhost"+httpAddr+"/mcp",
 	)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatalf("listen: %v", err)
+
+	// `make start` sets YULLU_OPEN_BROWSER=1 so the UI pops automatically
+	// after the binary boots. Service units, scripts, and bare `yullu`
+	// invocations leave it unset (no surprise window).
+	if shouldOpenBrowser() {
+		go openBrowser("http://localhost" + httpAddr)
 	}
+
+	if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatalf("serve: %v", err)
+	}
+}
+
+// shouldOpenBrowser is true when YULLU_OPEN_BROWSER is set to a
+// truthy value. Defaults to false so launchd/systemd units and any
+// scripted use don't get a surprise browser window.
+func shouldOpenBrowser() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("YULLU_OPEN_BROWSER")))
+	switch v {
+	case "1", "true", "yes", "y":
+		return true
+	}
+	return false
+}
+
+// openBrowser launches the host OS's default browser at the given URL.
+// Best-effort: a failure to launch (headless box, missing helper) is
+// logged at debug level but doesn't fail the server boot.
+//
+// The launch tool (open/xdg-open/rundll32) exits immediately after
+// dispatching the browser, so we reap it asynchronously to avoid a
+// zombie process accumulating for the lifetime of the parent. The
+// reaper goroutine costs ~2KB of stack and runs once per browser
+// launch (≤ 1× per server boot).
+func openBrowser(url string) {
+	var cmd string
+	var args []string
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = "open"
+		args = []string{url}
+	case "windows":
+		cmd = "rundll32"
+		args = []string{"url.dll,FileProtocolHandler", url}
+	default: // linux, freebsd, openbsd, etc.
+		cmd = "xdg-open"
+		args = []string{url}
+	}
+	c := exec.Command(cmd, args...)
+	if err := c.Start(); err != nil {
+		return
+	}
+	// Wait reaps the child so it doesn't become a zombie. Discard the
+	// result — exit status of `open`/`xdg-open` doesn't tell us anything
+	// useful about whether the browser actually opened.
+	go func() { _ = c.Wait() }()
 }
 
 // spaHandler serves the embedded SPA. Static files (assets/*.js, /favicon.ico,
@@ -167,6 +253,13 @@ Usage:
   yullu record-turn         Internal: reads Claude Code Stop hook payload on stdin
                             and records the last turn. Wired into ~/.claude/settings.json
                             by 'yullu install claude'; not meant to be called directly.
+  yullu inject              Internal: reads Claude Code UserPromptSubmit hook
+                            payload on stdin and prints relevant memories to stdout
+                            as context. Wired by 'yullu install claude'.
+  yullu export agents-md    Write a categorised AGENTS.md from the memory store.
+                            Flags:
+                              --out PATH      output path (default ./AGENTS.md; '-' for stdout)
+                              --project ID    project to export (default: cwd's git remote)
   yullu version             Print version
   yullu help                Show this help
 

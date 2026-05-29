@@ -14,8 +14,13 @@ type Status struct {
 	ConfigPath string `json:"config_path"`
 	DBPath     string `json:"db_path"`
 	Embedder   string `json:"embedder,omitempty"`
-	Message    string `json:"message,omitempty"`
-	Hint       string `json:"hint,omitempty"`
+	// Reasoner names the direct provider (anthropic|openai) when one is
+	// configured. Empty/omitted means "sampling-only mode" — dreams can
+	// only run from inside an MCP client session, not from the background
+	// scheduler or the desktop "Dream now" button.
+	Reasoner string `json:"reasoner,omitempty"`
+	Message  string `json:"message,omitempty"`
+	Hint     string `json:"hint,omitempty"`
 }
 
 // ConfigView is the flat JSON projection of the on-disk config.toml - what

@@ -23,15 +23,15 @@ func TestStoreCRUDAndSearch(t *testing.T) {
 
 	// Insert distinct memories with hand-crafted unit vectors so we can
 	// reason about which one a query lands closest to.
-	id1, err := st.Insert(ctx, "", projectA, "remember thing one", []string{"a"}, []float32{1, 0, 0, 0})
+	id1, err := st.Insert(ctx, "", projectA, "remember thing one", []string{"a"}, []float32{1, 0, 0, 0}, "")
 	if err != nil {
 		t.Fatalf("insert 1: %v", err)
 	}
-	id2, err := st.Insert(ctx, "", projectA, "remember thing two", nil, []float32{0, 1, 0, 0})
+	id2, err := st.Insert(ctx, "", projectA, "remember thing two", nil, []float32{0, 1, 0, 0}, "")
 	if err != nil {
 		t.Fatalf("insert 2: %v", err)
 	}
-	idB, err := st.Insert(ctx, "", projectB, "different project", nil, []float32{1, 0, 0, 0})
+	idB, err := st.Insert(ctx, "", projectB, "different project", nil, []float32{1, 0, 0, 0}, "")
 	if err != nil {
 		t.Fatalf("insert B: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestStoreCRUDAndSearch(t *testing.T) {
 	}
 
 	// Search projectA with a query close to vec1; expect id1 first and idB excluded.
-	hits, err := st.Search(ctx, projectA, []float32{0.9, 0.1, 0, 0}, 2)
+	hits, err := st.Search(ctx, projectA, []float32{0.9, 0.1, 0, 0}, 2, nil)
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestStoreCRUDAndSearch(t *testing.T) {
 	if got.Content != newContent {
 		t.Fatalf("content not updated: %q", got.Content)
 	}
-	hits, err = st.Search(ctx, projectA, []float32{0, 0, 1, 0}, 1)
+	hits, err = st.Search(ctx, projectA, []float32{0, 0, 1, 0}, 1, nil)
 	if err != nil {
 		t.Fatalf("search after update: %v", err)
 	}

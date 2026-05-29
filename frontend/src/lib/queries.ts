@@ -12,19 +12,26 @@ import {
 import {
   DeleteMemory,
   Dream,
+  GetBufferedSessions,
   GetConfig,
+  GetDreamPasses,
+  GetDreamProgress,
+  GetDreamPrompt,
   GetDreamStats,
   GetMemoryEventsByDay,
   GetMemoryGraph,
   GetMemoryStats,
   GetProjectOverrides,
   GetSessionStats,
+  GetUnratedMemories,
   GetUsageByDay,
   GetUsageSummary,
   ListMemories,
   ListProjects,
+  RateMemory,
   Retry,
   SaveConfig,
+  SaveDreamPrompt,
   SaveProjectOverrides,
   SearchMemories,
   Status,
@@ -54,6 +61,12 @@ export const qk = {
   memoryGraph: (projectID: string) => ["memory-graph", projectID] as const,
   dreamStats: (projectID: string, days: number) => ["dream-stats", projectID, days] as const,
   projectOverrides: (projectID: string) => ["project-overrides", projectID] as const,
+  bufferedSessions: (projectID: string) =>
+    ["buffered-sessions", projectID] as const,
+  dreamPrompt: ["dream-prompt"] as const,
+  dreamProgress: ["dream-progress"] as const,
+  dreamPasses: (projectID: string) => ["dream-passes", projectID] as const,
+  unratedMemories: (projectID: string) => ["unrated-memories", projectID] as const,
 };
 
 // Polling cadences. Local SQLite queries via Wails are cheap (sub-ms), so we
@@ -249,7 +262,88 @@ export function useDream(projectID: string) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.memories(projectID) });
       qc.invalidateQueries({ queryKey: qk.sessionStats(projectID) });
+      qc.invalidateQueries({ queryKey: qk.bufferedSessions(projectID) });
       qc.invalidateQueries({ queryKey: qk.projects });
     },
+  });
+}
+
+export function useBufferedSessions(projectID: string) {
+  return useQuery({
+    queryKey: qk.bufferedSessions(projectID),
+    queryFn: () => GetBufferedSessions(projectID),
+    staleTime: 0,
+    refetchInterval: POLL_FAST,
+    refetchIntervalInBackground: false,
+  });
+}
+
+export function useDreamPrompt() {
+  return useQuery({
+    queryKey: qk.dreamPrompt,
+    queryFn: () => GetDreamPrompt(),
+    staleTime: 30_000,
+  });
+}
+
+export function useSaveDreamPrompt() {
+  const qc = useQueryClient();
+  return useMutation<unknown, Error, string>({
+    mutationFn: (prompt: string) => SaveDreamPrompt(prompt),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.dreamPrompt });
+    },
+  });
+}
+
+// useDreamProgress polls /api/dream/progress so the dashboard can show a
+// live "Dreaming…" indicator. Refetch interval shortens while a pass is
+// running (fast feedback) and stretches when idle (no point hammering
+// the server for an unchanged snapshot).
+export function useDreamProgress() {
+  return useQuery({
+    queryKey: qk.dreamProgress,
+    queryFn: () => GetDreamProgress(),
+    staleTime: 0,
+    refetchInterval: (q) => (q.state.data?.running ? 1000 : 5000),
+  });
+}
+
+// useUnratedMemories powers the Review queue. Memories already rated
+// drop out of the list; rejections (≤ 5) disappear because the server
+// deletes the row outright.
+export function useUnratedMemories(projectID: string) {
+  return useQuery({
+    queryKey: qk.unratedMemories(projectID),
+    queryFn: () => GetUnratedMemories(projectID),
+    enabled: !!projectID,
+    staleTime: POLL_SLOW,
+  });
+}
+
+// useRateMemory submits a rating. On success we invalidate the unrated
+// list (so the just-rated row disappears) AND the regular memories list
+// for the project (so survivors show their new rating + rejections
+// disappear).
+export function useRateMemory(projectID: string) {
+  const qc = useQueryClient();
+  return useMutation<unknown, Error, { id: number; rating: number; comment: string }>({
+    mutationFn: ({ id, rating, comment }) => RateMemory(id, rating, comment),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.unratedMemories(projectID) });
+      qc.invalidateQueries({ queryKey: qk.memories(projectID) });
+      qc.invalidateQueries({ queryKey: qk.memoryStats(projectID) });
+    },
+  });
+}
+
+// useDreamPasses powers the Stats page's per-cycle table.
+export function useDreamPasses(projectID: string) {
+  return useQuery({
+    queryKey: qk.dreamPasses(projectID),
+    queryFn: () => GetDreamPasses(projectID, 30),
+    staleTime: 0,
+    refetchInterval: POLL_SLOW,
+    refetchIntervalInBackground: false,
   });
 }

@@ -198,6 +198,14 @@ func installClaude() error {
 		fmt.Printf("claude: stop hook setup failed: %v\n", err)
 		fmt.Println("claude: skill + MCP are still set up; recording will depend on the model honouring SKILL.md")
 	}
+	// Install the UserPromptSubmit hook so relevant memories get
+	// injected before every prompt — turns memory retrieval from
+	// "the agent decides to ask" into "the agent always sees what's
+	// relevant".
+	if err := installClaudeUserPromptHook(dir); err != nil {
+		fmt.Printf("claude: user-prompt hook setup failed: %v\n", err)
+		fmt.Println("claude: skill + MCP are still set up; memory injection will depend on the model calling retrieve_memories")
+	}
 	return nil
 }
 
@@ -214,42 +222,85 @@ func uninstallClaude() error {
 	if err := uninstallClaudeStopHook(claudeDir()); err != nil {
 		fmt.Printf("claude: stop hook removal failed: %v\n", err)
 	}
+	if err := uninstallClaudeUserPromptHook(claudeDir()); err != nil {
+		fmt.Printf("claude: user-prompt hook removal failed: %v\n", err)
+	}
 	return nil
 }
 
 // installClaudeStopHook adds a Stop-event hook to ~/.claude/settings.json
-// that invokes `yullu record-turn`. The hook is matched on "*" (every
-// turn). Existing entries from other tools are preserved — we merge our
-// entry into hooks.Stop rather than replacing the whole list.
-//
-// Why JSON merge instead of a sentinel-marker rewrite: Claude Code's
-// settings.json is user-owned and can hold hooks from other tools (linter
-// runners, deploy notifiers, etc.). Clobbering would silently break them.
+// that invokes `yullu record-turn`. Thin wrapper over upsertClaudeHook —
+// see that function for the shared install logic.
 func installClaudeStopHook(dir string) error {
 	yulluBin, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("locate yullu binary: %w", err)
 	}
+	return upsertClaudeHook(dir, "Stop", "yullu record-turn", yulluBin+" record-turn")
+}
+
+// installClaudeUserPromptHook adds a UserPromptSubmit hook that runs
+// `yullu inject` before every user prompt. The hook POSTs the user's
+// prompt to the local Yul'lu server, gets back the top-K relevant
+// memories for the project, and prints them as ambient context the
+// model sees before responding.
+func installClaudeUserPromptHook(dir string) error {
+	yulluBin, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate yullu binary: %w", err)
+	}
+	return upsertClaudeHook(dir, "UserPromptSubmit", "yullu inject", yulluBin+" inject")
+}
+
+// upsertClaudeHook is the shared install path for any Claude Code hook
+// keyed by event name (Stop, UserPromptSubmit, …). marker is the
+// command-substring we use to detect our own entry (so we can rewrite
+// stale binary paths rather than appending duplicates). command is the
+// full command line to install. Existing entries from other tools are
+// preserved — we merge into the per-event hook list rather than
+// replacing it.
+//
+// Why JSON merge instead of a sentinel-marker rewrite: Claude Code's
+// settings.json is user-owned and can hold hooks from other tools
+// (linter runners, deploy notifiers, etc.). Clobbering would silently
+// break them.
+func upsertClaudeHook(dir, eventName, marker, command string) error {
 	settingsPath := filepath.Join(dir, "settings.json")
 	settings, err := loadJSONFile(settingsPath)
 	if err != nil {
 		return err
 	}
 
-	// hooks.Stop is an array of {matcher, hooks: [{type, command}]} groups.
+	// hooks.<EventName> is an array of {matcher, hooks: [{type, command}]} groups.
 	hooks, _ := settings["hooks"].(map[string]any)
 	if hooks == nil {
 		hooks = map[string]any{}
 		settings["hooks"] = hooks
 	}
-	stopList, _ := hooks["Stop"].([]any)
+	eventList, _ := hooks[eventName].([]any)
 
-	command := yulluBin + " record-turn"
-	if stopAlreadyConfigured(stopList, command) {
-		fmt.Println("claude: Stop hook already present, leaving alone")
+	// Three cases:
+	//   1. No yullu entry yet — append one.
+	//   2. A yullu entry exists with the same command — no-op.
+	//   3. A yullu entry exists with a *different* binary path (e.g. the
+	//      old `./bin/yullu …` after a `make refresh` rebuilt
+	//      $GOPATH/bin/yullu) — rewrite its command in place.
+	// Case 3 is why `make refresh` exists: without it, the hook silently
+	// fires the wrong binary forever.
+	updated, changed := updateYulluHookCommand(eventList, marker, command)
+	switch {
+	case changed:
+		hooks[eventName] = updated
+		if err := writeJSONFile(settingsPath, settings); err != nil {
+			return err
+		}
+		fmt.Printf("claude: updated %s hook command in %s\n", eventName, settingsPath)
+		return nil
+	case hookAlreadyConfigured(eventList, marker):
+		fmt.Printf("claude: %s hook already up-to-date, leaving alone\n", eventName)
 		return nil
 	}
-	stopList = append(stopList, map[string]any{
+	eventList = append(eventList, map[string]any{
 		"matcher": "*",
 		"hooks": []any{
 			map[string]any{
@@ -258,18 +309,85 @@ func installClaudeStopHook(dir string) error {
 			},
 		},
 	})
-	hooks["Stop"] = stopList
+	hooks[eventName] = eventList
 
 	if err := writeJSONFile(settingsPath, settings); err != nil {
 		return err
 	}
-	fmt.Printf("claude: added Stop hook to %s\n", settingsPath)
+	fmt.Printf("claude: added %s hook to %s\n", eventName, settingsPath)
 	return nil
 }
 
+// updateYulluHookCommand rewrites any existing yullu hook entry whose
+// command contains `marker` but differs from `want`. Returns the
+// (possibly-mutated) list and whether anything changed.
+func updateYulluHookCommand(list []any, marker, want string) ([]any, bool) {
+	changed := false
+	for _, entry := range list {
+		obj, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		hookList, _ := obj["hooks"].([]any)
+		for _, h := range hookList {
+			hookObj, ok := h.(map[string]any)
+			if !ok {
+				continue
+			}
+			cmd, _ := hookObj["command"].(string)
+			if !strings.Contains(cmd, marker) {
+				continue
+			}
+			if cmd == want {
+				continue
+			}
+			hookObj["command"] = want
+			changed = true
+		}
+	}
+	return list, changed
+}
+
+// hookAlreadyConfigured reports whether the event-hook list already has
+// an entry whose command contains `marker`. Used by the upsert path to
+// distinguish "no-op, leave alone" from "first install, append".
+func hookAlreadyConfigured(list []any, marker string) bool {
+	for _, entry := range list {
+		obj, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		hookList, _ := obj["hooks"].([]any)
+		for _, h := range hookList {
+			hookObj, ok := h.(map[string]any)
+			if !ok {
+				continue
+			}
+			cmd, _ := hookObj["command"].(string)
+			if strings.Contains(cmd, marker) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // uninstallClaudeStopHook removes any Stop entries whose command is our
-// `yullu record-turn` invocation. Other tools' Stop hooks are untouched.
+// `yullu record-turn` invocation. Thin wrapper over removeClaudeHook.
 func uninstallClaudeStopHook(dir string) error {
+	return removeClaudeHook(dir, "Stop", "yullu record-turn")
+}
+
+// uninstallClaudeUserPromptHook removes any UserPromptSubmit entries
+// whose command is our `yullu inject` invocation.
+func uninstallClaudeUserPromptHook(dir string) error {
+	return removeClaudeHook(dir, "UserPromptSubmit", "yullu inject")
+}
+
+// removeClaudeHook is the shared uninstall path. Filters out any hook
+// entries under hooks.<eventName> whose command contains `marker`.
+// Other tools' hooks are untouched.
+func removeClaudeHook(dir, eventName, marker string) error {
 	settingsPath := filepath.Join(dir, "settings.json")
 	settings, err := loadJSONFile(settingsPath)
 	if err != nil || settings == nil {
@@ -279,21 +397,21 @@ func uninstallClaudeStopHook(dir string) error {
 	if hooks == nil {
 		return nil
 	}
-	stopList, _ := hooks["Stop"].([]any)
-	if len(stopList) == 0 {
+	eventList, _ := hooks[eventName].([]any)
+	if len(eventList) == 0 {
 		return nil
 	}
-	filtered := stopList[:0]
-	for _, entry := range stopList {
-		if entryReferencesYullu(entry) {
+	filtered := eventList[:0]
+	for _, entry := range eventList {
+		if entryReferencesMarker(entry, marker) {
 			continue
 		}
 		filtered = append(filtered, entry)
 	}
 	if len(filtered) == 0 {
-		delete(hooks, "Stop")
+		delete(hooks, eventName)
 	} else {
-		hooks["Stop"] = filtered
+		hooks[eventName] = filtered
 	}
 	if len(hooks) == 0 {
 		delete(settings, "hooks")
@@ -301,8 +419,30 @@ func uninstallClaudeStopHook(dir string) error {
 	if err := writeJSONFile(settingsPath, settings); err != nil {
 		return err
 	}
-	fmt.Printf("claude: removed yullu Stop hook from %s\n", settingsPath)
+	fmt.Printf("claude: removed yullu %s hook from %s\n", eventName, settingsPath)
 	return nil
+}
+
+// entryReferencesMarker reports whether any of the hook entry's
+// commands contain the given marker substring. Used by the remove path
+// to decide which entries to drop.
+func entryReferencesMarker(entry any, marker string) bool {
+	obj, ok := entry.(map[string]any)
+	if !ok {
+		return false
+	}
+	hookList, _ := obj["hooks"].([]any)
+	for _, h := range hookList {
+		hookObj, ok := h.(map[string]any)
+		if !ok {
+			continue
+		}
+		cmd, _ := hookObj["command"].(string)
+		if strings.Contains(cmd, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // stopAlreadyConfigured reports whether the Stop hook list already has an

@@ -24,21 +24,57 @@ import (
 // implements the interfaces in internal/handlers that the REST handlers
 // depend on. State-machine methods (Status/Retry/SaveConfig) mutate the
 // fields; read methods just delegate to the underlying store.
+//
+// Concurrency model: mu (RWMutex) guards every mutable field
+// — cfg, store, embedder, srv, mcpHandler, initError. Readers acquire
+// RLock just long enough to snapshot the pointer they need into a local,
+// then release; they operate on the local for the rest of the handler.
+// Writers (openStore, Retry, SaveConfig, shutdown) hold Lock for the
+// duration of the swap.
+//
+// Why a snapshot pattern: handler methods do slow IO (DB queries,
+// reasoner calls) — we never want to hold the App lock across them, or
+// SaveConfig would block for minutes. The snapshot keeps lock windows
+// at "copy three pointers" scale.
 type App struct {
-	ctx       context.Context
-	logger    *slog.Logger
-	cfgPath   string
-	cfg       config.Config
-	store     *store.Store
-	embedder  ai.Embedder
-	srv       *server.Server // dream/reconcile entry point; nil until openStore succeeds
-	initError string         // last reason openStore failed, surfaced via Status()
+	ctx     context.Context
+	logger  *slog.Logger
+	cfgPath string
 
-	// mcpHandler is the http.Handler currently routing /mcp requests. It's
-	// swapped each time openStore succeeds so SaveConfig (which can change
-	// the embedder/reasoner) takes effect without restarting the listener.
-	mcpMu      sync.RWMutex
-	mcpHandler http.Handler
+	mu         sync.RWMutex
+	cfg        config.Config
+	store      *store.Store
+	embedder   ai.Embedder
+	srv        *server.Server // dream/reconcile entry point; nil until openStore succeeds
+	initError  string         // last reason openStore failed, surfaced via Status()
+	mcpHandler http.Handler   // current /mcp router; swapped on each successful openStore
+}
+
+// appSnapshot is the captured pointer view a handler operates on. It is
+// always a value copy of the pointer fields under a.mu — once a reader
+// has the snapshot, it never re-touches a.* for state. The pointed-to
+// store/srv/embedder may be swapped underneath by a concurrent writer,
+// but the in-flight handler keeps a reference to the old generation
+// and finishes safely.
+type appSnapshot struct {
+	store    *store.Store
+	srv      *server.Server
+	embedder ai.Embedder
+	cfg      config.Config
+}
+
+// snapshot captures the App's mutable state under a brief RLock. Use
+// this at the top of every public handler method; never read a.store /
+// a.srv / a.embedder / a.cfg directly outside the locked region.
+func (a *App) snapshot() appSnapshot {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return appSnapshot{
+		store:    a.store,
+		srv:      a.srv,
+		embedder: a.embedder,
+		cfg:      a.cfg,
+	}
 }
 
 func NewApp() *App {
@@ -48,42 +84,47 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	a.cfgPath = config.MustDefaultPath()
-	a.cfg = config.MustLoad(a.cfgPath)
+	cfg := config.MustLoad(a.cfgPath)
+	a.mu.Lock()
+	a.cfg = cfg
+	a.mu.Unlock()
 	a.openStore()
 }
 
 func (a *App) shutdown(_ context.Context) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.store != nil {
 		_ = a.store.Close()
+		a.store = nil
 	}
 }
 
-// swapMCPHandler is called by openStore whenever the underlying *Server
-// changes (initial boot + after SaveConfig). The mux entry mounted at /mcp
-// always reads the current handler under mcpMu, so requests in flight
-// during a swap return cleanly via the old handler and subsequent ones
-// hit the new one.
-func (a *App) swapMCPHandler() {
-	a.mcpMu.Lock()
-	defer a.mcpMu.Unlock()
-	if a.srv == nil {
-		a.mcpHandler = nil
-		return
-	}
-	a.mcpHandler = a.srv.MCPHandler()
-}
-
+// mcpHandlerHTTP returns the current /mcp router. The mux entry
+// dispatched via mcpProxy reads through this on every request, so a
+// SaveConfig swap takes effect at the next request boundary while
+// in-flight requests finish on the previous handler.
 func (a *App) mcpHandlerHTTP() http.Handler {
-	a.mcpMu.RLock()
-	defer a.mcpMu.RUnlock()
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	return a.mcpHandler
 }
 
-// openStore tries to build an embedder from the current config and open the
-// SQLite store. Failures are captured on initError and logged; the UI
-// surfaces both via Status() so the user can fix the cause without
-// hunting through terminal output.
+// openStore acquires a.mu and runs the open path. Use this from the
+// public surface. Internal callers that already hold the lock should
+// call openStoreLocked directly.
 func (a *App) openStore() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.openStoreLocked()
+}
+
+// openStoreLocked builds an embedder from cfg, opens the SQLite store,
+// and (re)constructs the MCP server. CALLER MUST HOLD a.mu.Lock().
+// Failures are captured on initError and logged; the UI surfaces both
+// via Status() so the user can fix the cause without hunting through
+// terminal output.
+func (a *App) openStoreLocked() {
 	a.initError = ""
 	embedder, err := ai.BuildEmbedder(a.cfg, ai.NopRecorder())
 	if err != nil {
@@ -115,31 +156,48 @@ func (a *App) openStore() {
 
 	reasoner, _ := ai.BuildReasoner(a.cfg, ai.NopRecorder())
 	a.srv = server.New(st, embedder, reasoner, a.cfg, a.logger)
-	a.swapMCPHandler()
+	// Inline what swapMCPHandler used to do — we already hold the lock.
+	a.mcpHandler = a.srv.MCPHandler()
 
 	if a.cfg.Sync.Enabled && a.cfg.Sync.AutoReconcileOnStartup {
-		a.srv.LogReconcile(a.ctx)
+		// LogReconcile is a long-running call; drop the lock for it. The
+		// fields it reads (a.srv) are already captured by the method
+		// receiver before this point, so it's safe.
+		srv := a.srv
+		go func() { srv.LogReconcile(a.ctx) }()
 	}
 }
 
 // ---------- StatusService ----------
 
 func (a *App) Status() handlers.Status {
+	a.mu.RLock()
+	cfg := a.cfg
+	storeOpen := a.store != nil
+	initErr := a.initError
+	a.mu.RUnlock()
+
 	s := handlers.Status{
 		ConfigPath: a.cfgPath,
 		DBPath:     store.MustDefaultDBPath(),
 	}
-	if a.store != nil {
+	if storeOpen {
 		s.Ready = true
-		s.Embedder = a.cfg.Embedding.Provider
+		s.Embedder = cfg.Embedding.Provider
+		// Reasoner is populated only when a direct provider is configured.
+		// Empty signals "sampling-only mode" to the UI (no background
+		// scheduler, no desktop button — the assistant must call dream_now).
+		if cfg.Reasoning.Provider != "" {
+			s.Reasoner = cfg.Reasoning.Provider
+		}
 		return s
 	}
-	if a.initError != "" {
-		s.Message = a.initError
-		s.Hint = hintFor(a.initError)
+	if initErr != "" {
+		s.Message = initErr
+		s.Hint = hintFor(initErr)
 		return s
 	}
-	if a.cfg.Voyage.APIKey == "" && a.cfg.OpenAI.APIKey == "" {
+	if cfg.Voyage.APIKey == "" && cfg.OpenAI.APIKey == "" {
 		s.Message = "No API key configured."
 		s.Hint = "Add a Voyage or OpenAI key in Settings (free Voyage tier at voyageai.com)."
 	} else {
@@ -151,13 +209,17 @@ func (a *App) Status() handlers.Status {
 
 // Retry re-runs openStore after the user fixes the underlying cause
 // (deletes a stale DB, pastes an API key, creates the data directory).
+// Holds the write lock for the duration so handlers don't catch a
+// partially-swapped store mid-reset.
 func (a *App) Retry() handlers.Status {
+	a.mu.Lock()
 	if a.store != nil {
 		_ = a.store.Close()
 		a.store = nil
 	}
 	a.embedder = nil
-	a.openStore()
+	a.openStoreLocked()
+	a.mu.Unlock()
 	return a.Status()
 }
 
@@ -187,24 +249,28 @@ func hintFor(errMsg string) string {
 // ---------- ConfigService ----------
 
 func (a *App) GetConfig() handlers.ConfigView {
+	a.mu.RLock()
+	cfg := a.cfg
+	a.mu.RUnlock()
 	return handlers.ConfigView{
-		EmbeddingProvider:       a.cfg.Embedding.Provider,
-		EmbeddingModel:          a.cfg.Embedding.Model,
-		ReasoningProvider:       a.cfg.Reasoning.Provider,
-		ReasoningModel:          a.cfg.Reasoning.Model,
-		VoyageAPIKey:            a.cfg.Voyage.APIKey,
-		OpenAIAPIKey:            a.cfg.OpenAI.APIKey,
-		AnthropicAPIKey:         a.cfg.Anthropic.APIKey,
-		SyncEnabled:             a.cfg.Sync.Enabled,
-		DreamingEnabled:         a.cfg.Dreaming.Enabled,
-		DreamingInterval:        a.cfg.Dreaming.Interval,
-		DreamingMinMessages:     a.cfg.Dreaming.MinMessages,
-		DreamingContextMemories: a.cfg.Dreaming.ContextMemories,
-		DreamingOnIdleSeconds:   a.cfg.Dreaming.OnIdleSeconds,
+		EmbeddingProvider:       cfg.Embedding.Provider,
+		EmbeddingModel:          cfg.Embedding.Model,
+		ReasoningProvider:       cfg.Reasoning.Provider,
+		ReasoningModel:          cfg.Reasoning.Model,
+		VoyageAPIKey:            cfg.Voyage.APIKey,
+		OpenAIAPIKey:            cfg.OpenAI.APIKey,
+		AnthropicAPIKey:         cfg.Anthropic.APIKey,
+		SyncEnabled:             cfg.Sync.Enabled,
+		DreamingEnabled:         cfg.Dreaming.Enabled,
+		DreamingInterval:        cfg.Dreaming.Interval,
+		DreamingMinMessages:     cfg.Dreaming.MinMessages,
+		DreamingContextMemories: cfg.Dreaming.ContextMemories,
+		DreamingOnIdleSeconds:   cfg.Dreaming.OnIdleSeconds,
 	}
 }
 
 func (a *App) SaveConfig(v handlers.ConfigView) (handlers.Status, error) {
+	a.mu.Lock()
 	a.cfg.Embedding.Provider = v.EmbeddingProvider
 	a.cfg.Embedding.Model = v.EmbeddingModel
 	a.cfg.Reasoning.Provider = v.ReasoningProvider
@@ -220,40 +286,56 @@ func (a *App) SaveConfig(v handlers.ConfigView) (handlers.Status, error) {
 	a.cfg.Dreaming.ContextMemories = v.DreamingContextMemories
 	a.cfg.Dreaming.OnIdleSeconds = v.DreamingOnIdleSeconds
 
-	if err := writeConfigTOML(a.cfgPath, a.cfg); err != nil {
+	cfgCopy := a.cfg
+	cfgPath := a.cfgPath
+	a.mu.Unlock()
+
+	// Write the TOML outside the lock — it's filesystem IO and the
+	// caller doesn't need to be serialised against unrelated readers
+	// while the file syncs. The bytes we write are the cfgCopy snapshot,
+	// so a concurrent SaveConfig (unlikely from the single-user UI) would
+	// race file contents, which is acceptable.
+	if err := writeConfigTOML(cfgPath, cfgCopy); err != nil {
 		return a.Status(), fmt.Errorf("write config: %w", err)
 	}
+
+	// Re-open the store under the write lock so handlers in flight see
+	// either the old or the new generation, never a half-swapped state.
+	a.mu.Lock()
 	if a.store != nil {
 		_ = a.store.Close()
 		a.store = nil
 	}
-	a.openStore()
+	a.openStoreLocked()
+	a.mu.Unlock()
 	return a.Status(), nil
 }
 
 // ---------- MemoryReader ----------
 
 func (a *App) List(ctx context.Context, projectID string, limit int) ([]store.Memory, error) {
-	if a.store == nil {
+	snap := a.snapshot()
+	if snap.store == nil {
 		return nil, fmt.Errorf("store not open - finish setup first")
 	}
 	if limit <= 0 {
 		limit = 100
 	}
-	return a.store.List(ctx, projectID, limit)
+	return snap.store.List(ctx, projectID, limit)
 }
 
 func (a *App) SearchText(ctx context.Context, projectID, query string, limit int) ([]store.Memory, error) {
-	if a.store == nil {
+	snap := a.snapshot()
+	if snap.store == nil {
 		return nil, fmt.Errorf("store not open - finish setup first")
 	}
 	if limit <= 0 {
 		limit = 100
 	}
 	if strings.TrimSpace(query) == "" {
-		return a.store.List(ctx, projectID, limit)
+		return snap.store.List(ctx, projectID, limit)
 	}
-	return a.store.SearchText(ctx, projectID, query, limit)
+	return snap.store.SearchText(ctx, projectID, query, limit)
 }
 
 // ---------- MemoryEditor ----------
@@ -263,12 +345,13 @@ func (a *App) SearchText(ctx context.Context, projectID, query string, limit int
 // overwrites tags with the supplied slice (treat empty as "clear").
 //
 // Heads up: this writes to the local DB only. Desktop-initiated changes
-// don't currently propagate to .yullu/events/.
+// don't currently propagate to .yullu/logs/.
 func (a *App) UpdateMemory(ctx context.Context, id int64, content string, tags []string) (*store.Memory, error) {
-	if a.store == nil || a.embedder == nil {
+	snap := a.snapshot()
+	if snap.store == nil || snap.embedder == nil {
 		return nil, fmt.Errorf("store not open - finish setup first")
 	}
-	existing, err := a.store.Get(ctx, id)
+	existing, err := snap.store.Get(ctx, id)
 	if err != nil {
 		return nil, err
 	}
@@ -278,7 +361,7 @@ func (a *App) UpdateMemory(ctx context.Context, id int64, content string, tags [
 	if content != existing.Content {
 		c := content
 		contentPtr = &c
-		vecs, err := a.embedder.Embed(ctx, []string{c})
+		vecs, err := snap.embedder.Embed(ctx, []string{c})
 		if err != nil {
 			return nil, fmt.Errorf("embed: %w", err)
 		}
@@ -286,82 +369,91 @@ func (a *App) UpdateMemory(ctx context.Context, id int64, content string, tags [
 	}
 	tagsPtr := &tags
 
-	if err := a.store.Update(ctx, id, contentPtr, tagsPtr, newVec); err != nil {
+	if err := snap.store.Update(ctx, id, contentPtr, tagsPtr, newVec); err != nil {
 		return nil, fmt.Errorf("update: %w", err)
 	}
-	return a.store.Get(ctx, id)
+	return snap.store.Get(ctx, id)
 }
 
 func (a *App) DeleteMemory(ctx context.Context, id int64) error {
-	if a.store == nil {
+	snap := a.snapshot()
+	if snap.store == nil {
 		return fmt.Errorf("store not open")
 	}
-	return a.store.Delete(ctx, id)
+	return snap.store.Delete(ctx, id)
 }
 
 // ---------- ProjectLister ----------
 
 func (a *App) ListProjects(ctx context.Context) ([]string, error) {
-	if a.store == nil {
+	snap := a.snapshot()
+	if snap.store == nil {
 		return nil, fmt.Errorf("store not open - finish setup first")
 	}
-	return a.store.ListProjects(ctx)
+	return snap.store.ListProjects(ctx)
 }
 
 // ---------- GraphReader ----------
 
 func (a *App) MemoryGraph(ctx context.Context, projectID string) (store.MemoryGraph, error) {
-	if a.store == nil {
+	snap := a.snapshot()
+	if snap.store == nil {
 		return store.MemoryGraph{}, fmt.Errorf("store not open")
 	}
-	return a.store.MemoryGraph(ctx, projectID)
+	return snap.store.MemoryGraph(ctx, projectID)
 }
 
 // ---------- MemoryStatsReader ----------
 
 func (a *App) GetMemoryStats(ctx context.Context, projectID string) (store.MemoryStats, error) {
-	if a.store == nil {
+	snap := a.snapshot()
+	if snap.store == nil {
 		return store.MemoryStats{}, fmt.Errorf("store not open")
 	}
-	return a.store.GetMemoryStats(ctx, projectID)
+	return snap.store.GetMemoryStats(ctx, projectID)
 }
 
 func (a *App) MemoryEventsByDay(ctx context.Context, projectID string, days int) ([]store.DailyMemoryEvents, error) {
-	if a.store == nil {
+	snap := a.snapshot()
+	if snap.store == nil {
 		return nil, fmt.Errorf("store not open")
 	}
-	return a.store.MemoryEventsByDay(ctx, projectID, days)
+	return snap.store.MemoryEventsByDay(ctx, projectID, days)
 }
 
 // ---------- DreamStatsReader ----------
 
 func (a *App) DreamStats(ctx context.Context, projectID string, days int) (store.DreamStats, error) {
-	if a.store == nil {
+	snap := a.snapshot()
+	if snap.store == nil {
 		return store.DreamStats{}, fmt.Errorf("store not open")
 	}
-	return a.store.DreamStats(ctx, projectID, days)
+	return snap.store.DreamStats(ctx, projectID, days)
 }
 
 // ---------- UsageReader ----------
 
 func (a *App) UsageByDay(ctx context.Context, days int) ([]store.DailyUsage, error) {
-	if a.store == nil {
+	snap := a.snapshot()
+	if snap.store == nil {
 		return nil, fmt.Errorf("store not open")
 	}
-	return a.store.UsageByDay(ctx, days)
+	return snap.store.UsageByDay(ctx, days)
 }
 
 func (a *App) UsageSummary(ctx context.Context, since time.Time) ([]store.UsageBucket, error) {
-	if a.store == nil {
+	snap := a.snapshot()
+	if snap.store == nil {
 		return nil, fmt.Errorf("store not open")
 	}
-	return a.store.UsageSummary(ctx, since)
+	return snap.store.UsageSummary(ctx, since)
 }
 
 // ---------- SessionStatsProvider ----------
 
 func (a *App) GetSessionStats(ctx context.Context, projectID string) (handlers.SessionStats, error) {
-	if a.store == nil {
+	snap := a.snapshot()
+	if snap.store == nil {
 		return handlers.SessionStats{}, fmt.Errorf("store not open")
 	}
 	if projectID == "" {
@@ -374,7 +466,7 @@ func (a *App) GetSessionStats(ctx context.Context, projectID string) (handlers.S
 			return handlers.SessionStats{}, err
 		}
 	}
-	sessions, messages, err := a.store.CountSessionMessages(ctx, projectID)
+	sessions, messages, err := snap.store.CountSessionMessages(ctx, projectID)
 	if err != nil {
 		return handlers.SessionStats{}, err
 	}
@@ -390,10 +482,72 @@ func (a *App) GetSessionStats(ctx context.Context, projectID string) (handlers.S
 // or OpenAI with an API key). MCP sampling can't be used here because there
 // is no client session - the desktop is the user, not the client.
 func (a *App) Dream(ctx context.Context, opts server.DreamOptions) (*server.DreamResult, error) {
-	if a.srv == nil {
+	snap := a.snapshot()
+	if snap.srv == nil {
 		return nil, fmt.Errorf("desktop not initialised - finish setup first")
 	}
-	return a.srv.Dream(ctx, opts)
+	return snap.srv.Dream(ctx, opts)
+}
+
+// ---------- MemoryRecaller ----------
+
+// RecallMemories powers the UserPromptSubmit hook (and any other caller
+// that wants "given this text, which memories are relevant?"). Embeds
+// the query with the current embedder, runs vector search filtered to
+// the requested categories, and returns the hits.
+//
+// Categories may be nil — that returns the unfiltered top-K. limit
+// defaults to 5 when <= 0; we keep it conservative because every result
+// adds to the agent's prompt-time tokens.
+func (a *App) RecallMemories(ctx context.Context, projectID, query string, categories []store.MemoryCategory, limit int) ([]store.Memory, error) {
+	snap := a.snapshot()
+	if snap.store == nil || snap.embedder == nil {
+		return nil, fmt.Errorf("store not open - finish setup first")
+	}
+	if strings.TrimSpace(query) == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 5
+	}
+	vecs, err := snap.embedder.Embed(ctx, []string{query})
+	if err != nil {
+		return nil, fmt.Errorf("embed: %w", err)
+	}
+	if len(vecs) != 1 {
+		return nil, fmt.Errorf("embedder returned %d vectors, expected 1", len(vecs))
+	}
+	return snap.store.Search(ctx, projectID, vecs[0], limit, categories)
+}
+
+// ---------- MemoryRater ----------
+
+// ListUnrated returns memories awaiting a rating for projectID, newest
+// first. Powers the dedicated Review page.
+func (a *App) ListUnrated(ctx context.Context, projectID string, limit int) ([]store.Memory, error) {
+	snap := a.snapshot()
+	if snap.store == nil {
+		return nil, fmt.Errorf("store not open")
+	}
+	return snap.store.ListUnrated(ctx, projectID, limit)
+}
+
+// RateMemory writes a rating + comment. ≤ 5 moves the row to
+// rejected_memories (returned *Memory will be nil to signal the FE the
+// row is gone); ≥ 6 keeps it and returns the refreshed row.
+func (a *App) RateMemory(ctx context.Context, id int64, rating int, comment string) (*store.Memory, error) {
+	snap := a.snapshot()
+	if snap.store == nil {
+		return nil, fmt.Errorf("store not open")
+	}
+	if err := snap.store.RateMemory(ctx, id, rating, comment); err != nil {
+		return nil, err
+	}
+	if rating <= 5 {
+		// Rejection path — the row no longer exists.
+		return nil, nil
+	}
+	return snap.store.Get(ctx, id)
 }
 
 // ---------- MessageRecorder ----------
@@ -404,10 +558,11 @@ func (a *App) Dream(ctx context.Context, opts server.DreamOptions) (*server.Drea
 // the dreamer just like MCP clients do.
 func (a *App) RecordMessages(
 	ctx context.Context,
-	projectOverride, sessionID string,
+	projectOverride, callerCwd, sessionID string,
 	msgs []handlers.RecordedMessage,
 ) (string, error) {
-	if a.srv == nil {
+	snap := a.snapshot()
+	if snap.srv == nil {
 		return "", fmt.Errorf("desktop not initialised - finish setup first")
 	}
 	inputs := make([]store.SessionMessageInput, 0, len(msgs))
@@ -424,7 +579,147 @@ func (a *App) RecordMessages(
 		// resolve project so the caller still gets a sensible echo.
 		return projectOverride, nil
 	}
-	return a.srv.RecordSessionMessages(ctx, projectOverride, sessionID, inputs)
+	return snap.srv.RecordSessionMessages(ctx, projectOverride, callerCwd, sessionID, inputs)
+}
+
+// ---------- SessionBufferReader ----------
+
+// BufferedSessions returns every session_id with pending messages for
+// projectID, each paired with its full ordered message list. Empty
+// projectID resolves to the CWD's project (mirrors RecordMessages).
+func (a *App) BufferedSessions(ctx context.Context, projectID string) ([]handlers.BufferedSession, error) {
+	snap := a.snapshot()
+	if snap.store == nil {
+		return nil, fmt.Errorf("store not open")
+	}
+	if projectID == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return nil, err
+		}
+		projectID, err = scope.Resolve(cwd)
+		if err != nil {
+			return nil, err
+		}
+	}
+	sessionIDs, err := snap.store.SessionsWithMessages(ctx, projectID, 0)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]handlers.BufferedSession, 0, len(sessionIDs))
+	for _, sid := range sessionIDs {
+		msgs, err := snap.store.SessionMessages(ctx, projectID, sid)
+		if err != nil {
+			return nil, fmt.Errorf("load messages for %s: %w", sid, err)
+		}
+		viewMsgs := make([]handlers.BufferedMessage, 0, len(msgs))
+		for _, m := range msgs {
+			viewMsgs = append(viewMsgs, handlers.BufferedMessage{
+				Role:    m.Role,
+				Content: m.Content,
+				At:      m.At.Format(time.RFC3339),
+			})
+		}
+		out = append(out, handlers.BufferedSession{
+			SessionID:    sid,
+			ProjectID:    projectID,
+			MessageCount: len(msgs),
+			Messages:     viewMsgs,
+		})
+	}
+	return out, nil
+}
+
+// ---------- DreamPromptService ----------
+
+// GetDreamPrompt returns the active prompt plus the built-in default so
+// the UI can render a "reset" affordance and a hint at what changed.
+func (a *App) GetDreamPrompt() handlers.DreamPromptView {
+	text, custom, err := config.LoadDreamPrompt()
+	if err != nil {
+		a.logger.Warn("load dream prompt", "err", err.Error())
+	}
+	return handlers.DreamPromptView{
+		Prompt:       text,
+		Default:      config.DefaultDreamPrompt,
+		OutputFormat: config.DreamPromptOutputFormat,
+		IsCustom:     custom,
+		Path:         config.DreamPromptPath(),
+	}
+}
+
+// SaveDreamPrompt persists a custom prompt (empty = reset to default).
+// The next dream pass picks up the new text — no restart required —
+// because dream.go reads the prompt at call time.
+func (a *App) SaveDreamPrompt(text string) (handlers.DreamPromptView, error) {
+	if err := config.WriteDreamPrompt(text); err != nil {
+		return handlers.DreamPromptView{}, err
+	}
+	return a.GetDreamPrompt(), nil
+}
+
+// DreamContextMemories returns the current [dreaming].context_memories
+// value under RLock. Bound into RegisterParams as a method value (a
+// thunk) so the PostDream handler reads the live config on every
+// request instead of caching the value at boot time.
+func (a *App) DreamContextMemories() int {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.cfg.Dreaming.ContextMemories
+}
+
+// ---------- DreamProgressService ----------
+
+// DreamProgress translates the server-side in-memory snapshot into the
+// JSON-friendly view the FE polls. Timestamps come out as RFC3339 (or
+// empty string when zero) so the FE can pass them straight to Date()
+// without a nullable-check.
+func (a *App) DreamProgress() handlers.DreamProgressView {
+	state := a.snapshot()
+	if state.srv == nil {
+		return handlers.DreamProgressView{}
+	}
+	snap := state.srv.DreamProgressSnapshot()
+	v := handlers.DreamProgressView{
+		Running:           snap.Running,
+		ProjectID:         snap.ProjectID,
+		Phase:             snap.Phase,
+		TotalSessions:     snap.TotalSessions,
+		CompletedSessions: snap.CompletedSessions,
+		CurrentSessionID:  snap.CurrentSessionID,
+		MessagesProcessed: snap.MessagesProcessed,
+		OpsCreated:        snap.OpsCreated,
+		OpsUpdated:        snap.OpsUpdated,
+		OpsDeleted:        snap.OpsDeleted,
+		OpsSkipped:        snap.OpsSkipped,
+		LastError:         snap.LastError,
+	}
+	if !snap.StartedAt.IsZero() {
+		v.StartedAt = snap.StartedAt.Format(time.RFC3339)
+	}
+	if !snap.FinishedAt.IsZero() {
+		v.FinishedAt = snap.FinishedAt.Format(time.RFC3339)
+	}
+	v.SchedulerEnabled = snap.SchedulerEnabled
+	v.IntervalSeconds = snap.IntervalSeconds
+	v.OnIdleSeconds = snap.OnIdleSeconds
+	if !snap.LastMessageAt.IsZero() {
+		v.LastMessageAt = snap.LastMessageAt.Format(time.RFC3339)
+	}
+	if !snap.LastScheduledAt.IsZero() {
+		v.LastScheduledAt = snap.LastScheduledAt.Format(time.RFC3339)
+	}
+	if !snap.NextIntervalAt.IsZero() {
+		v.NextIntervalAt = snap.NextIntervalAt.Format(time.RFC3339)
+	}
+	if !snap.NextIdleAt.IsZero() {
+		v.NextIdleAt = snap.NextIdleAt.Format(time.RFC3339)
+	}
+	if !snap.NextAt.IsZero() {
+		v.NextAt = snap.NextAt.Format(time.RFC3339)
+	}
+	v.NextReason = snap.NextReason
+	return v
 }
 
 // ---------- ProjectOverridesService ----------
@@ -433,10 +728,14 @@ func (a *App) RecordMessages(
 // stacks them onto the global config to compute the effective view, and
 // returns all three so the UI can render inherited values as placeholders.
 func (a *App) GetProjectOverrides(_ context.Context, projectID string) (handlers.ProjectOverridesView, error) {
+	a.mu.RLock()
+	cfg := a.cfg
+	a.mu.RUnlock()
+
 	repoOverride, repoWarn := readOverride(config.RepoOverridePath(a.gitRoot()), false)
 	userOverride, userWarn := readOverride(config.UserOverridePath(projectID), true)
 
-	effective := config.Merge(a.cfg, repoOverride)
+	effective := config.Merge(cfg, repoOverride)
 	effective = config.Merge(effective, userOverride)
 
 	view := handlers.ProjectOverridesView{
@@ -473,8 +772,8 @@ func (a *App) SaveProjectOverrides(_ context.Context, projectID string, repo, us
 			return handlers.ProjectOverridesView{}, fmt.Errorf("write user override: %w", err)
 		}
 	}
-	if a.srv != nil {
-		a.srv.InvalidateProjectConfig(projectID)
+	if srv := a.snapshot().srv; srv != nil {
+		srv.InvalidateProjectConfig(projectID)
 	}
 	return a.GetProjectOverrides(context.Background(), projectID)
 }

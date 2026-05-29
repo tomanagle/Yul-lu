@@ -12,23 +12,31 @@ import (
 //  1. The canonical form of the git "origin" remote URL (e.g.
 //     github.com/owner/repo), if the directory is inside a git repo with a
 //     configured origin. This makes memories portable across clones and
-//     machines, since the same repo always resolves to the same ID regardless
-//     of where it lives on disk or whether it was cloned via SSH or HTTPS.
-//  2. The absolute path of the git root, if inside a git repo with no origin.
-//  3. The absolute path of start, if not inside a git repo.
+//     machines, since the same repo always resolves to the same ID
+//     regardless of where it lives on disk or whether it was cloned via
+//     SSH or HTTPS.
+//  2. The folder name (basename) — for non-git directories AND for git
+//     repos with no configured origin. Short and human-readable; the
+//     trade-off is that two unrelated folders with the same name collide,
+//     and the user can disambiguate with an explicit project_id override.
+//
+// The previous behaviour used an absolute path as the fallback. That
+// produced verbose IDs that broke as soon as a repo was moved on disk
+// or cloned to a different machine.
 func Resolve(start string) (string, error) {
 	abs, err := filepath.Abs(start)
 	if err != nil {
 		return "", err
 	}
-	gitRoot := findGitRoot(abs)
-	if gitRoot == "" {
-		return abs, nil
+	if gitRoot := findGitRoot(abs); gitRoot != "" {
+		if origin := remoteOriginURL(gitRoot); origin != "" {
+			return canonicalizeOrigin(origin), nil
+		}
+		// .git exists but no remote — use the repo's own folder name
+		// rather than start's, since start could be a nested subdir.
+		return filepath.Base(gitRoot), nil
 	}
-	if origin := remoteOriginURL(gitRoot); origin != "" {
-		return canonicalizeOrigin(origin), nil
-	}
-	return gitRoot, nil
+	return filepath.Base(abs), nil
 }
 
 // GitRoot returns the absolute path of the nearest git repository root walking

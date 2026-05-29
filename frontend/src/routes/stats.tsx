@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { RefreshCw, Sparkles } from "lucide-react";
+import { Sparkles } from "lucide-react";
 
 import {
+  useDreamPasses,
   useDreamStats,
   useMemoryEventsByDay,
   useMemoryGraph,
@@ -16,7 +17,6 @@ import { MemoryEventsChart, UsageByModelChart, UsageCostChart } from "@/componen
 import { MemoryGraphCanvas, useDecoratedGraph } from "@/components/memory-graph";
 import { relativeTime, shortUUID } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
@@ -76,35 +76,15 @@ export function StatsPage() {
   }
 
   const stats = statsQuery.data;
-
-  const refreshAll = () => {
-    statsQuery.refetch();
-    eventsQuery.refetch();
-    usageDayQuery.refetch();
-    usageSummaryQuery.refetch();
-    graphQuery.refetch();
-    sessionQuery.refetch();
-    dreamStatsQuery.refetch();
-  };
-
-  const anyFetching =
-    statsQuery.isFetching ||
-    eventsQuery.isFetching ||
-    usageDayQuery.isFetching ||
-    usageSummaryQuery.isFetching ||
-    graphQuery.isFetching ||
-    sessionQuery.isFetching ||
-    dreamStatsQuery.isFetching;
+  const dreamPassesQuery = useDreamPasses(project);
 
   return (
     <div className="space-y-6">
-      {/* Range picker + refresh. Project picker lives in the sidebar. */}
-      <div className="flex items-center justify-between gap-3">
+      {/* Range picker, right-aligned. Project picker is in the sidebar.
+          Removed the Refresh button — every query auto-refetches on an
+          interval, so manual refresh was redundant. */}
+      <div className="flex items-center justify-end gap-3">
         <RangeSelect value={days} onChange={setDays} />
-        <Button variant="outline" size="sm" onClick={refreshAll} disabled={anyFetching}>
-          <RefreshCw className={cn("h-4 w-4", anyFetching && "animate-spin")} />
-          Refresh
-        </Button>
       </div>
 
       {!stats && <p className="text-sm text-muted-foreground">Loading…</p>}
@@ -151,6 +131,11 @@ export function StatsPage() {
             buffer={sessionQuery.data}
             stats={dreamStatsQuery.data}
           />
+
+          {/* Per-cycle history - the last N dream passes. Surfaces which
+              passes were noisy (lots of skipped ops, errors) vs which
+              actually produced memories. */}
+          <DreamPassesCard passes={dreamPassesQuery.data ?? []} />
 
           {/* 2-up charts row */}
           <div className="grid gap-4 lg:grid-cols-2">
@@ -461,5 +446,72 @@ function RangeSelect({ value, onChange }: { value: number; onChange: (v: number)
         );
       })}
     </div>
+  );
+}
+
+// DreamPassesCard shows the most-recent N dream passes as a compact
+// table. Each row = one cycle: when, sessions/messages processed, ops
+// breakdown. Errors get a small badge so they're easy to spot without
+// having to expand anything. Empty state covers brand-new installs.
+function DreamPassesCard({ passes }: { passes: import("@/lib/schemas").DreamPass[] }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Dream cycles</CardTitle>
+        <CardDescription>
+          The {passes.length || "last few"} most recent passes. Skipped =
+          ops the reasoner emitted that didn't apply (missing UUID, empty
+          content, etc.).
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {passes.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            No dream passes recorded yet for this scope.
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="text-muted-foreground">
+                <tr className="border-b border-border/40 text-left">
+                  <th className="py-1.5 pr-3 font-medium">When</th>
+                  <th className="py-1.5 pr-3 font-medium">Sessions</th>
+                  <th className="py-1.5 pr-3 font-medium">Messages</th>
+                  <th className="py-1.5 pr-3 font-medium text-emerald-400/80">+ Created</th>
+                  <th className="py-1.5 pr-3 font-medium text-sky-400/80">~ Updated</th>
+                  <th className="py-1.5 pr-3 font-medium text-rose-400/80">− Deleted</th>
+                  <th className="py-1.5 pr-3 font-medium">Skipped</th>
+                  <th className="py-1.5 font-medium">Errors</th>
+                </tr>
+              </thead>
+              <tbody>
+                {passes.map((p) => (
+                  <tr key={p.id} className="border-b border-border/20 last:border-0">
+                    <td className="py-1.5 pr-3 font-mono text-[11px] text-muted-foreground">
+                      {relativeTime(p.at)}
+                    </td>
+                    <td className="py-1.5 pr-3">{p.sessions_processed}</td>
+                    <td className="py-1.5 pr-3">{p.messages_processed}</td>
+                    <td className="py-1.5 pr-3">{p.ops_created}</td>
+                    <td className="py-1.5 pr-3">{p.ops_updated}</td>
+                    <td className="py-1.5 pr-3">{p.ops_deleted}</td>
+                    <td className="py-1.5 pr-3 text-muted-foreground">{p.ops_skipped}</td>
+                    <td className="py-1.5">
+                      {p.errors?.length ? (
+                        <Badge variant="destructive" className="text-[10px]">
+                          {p.errors.length}
+                        </Badge>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }

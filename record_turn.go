@@ -56,8 +56,14 @@ func runRecordTurn() int {
 		return 0
 	}
 
+	// Forward Claude Code's cwd so the server resolves the project from
+	// the directory the user is *actually* working in. Without this, the
+	// server falls back to os.Getwd() — which is the directory yullu
+	// itself was launched from, so every recorded turn ends up scoped to
+	// yullu's own repo regardless of where the user is.
 	body, _ := json.Marshal(map[string]any{
 		"session_id": hookIn.SessionID,
+		"cwd":        hookIn.Cwd,
 		"messages": []map[string]string{
 			{"role": "user", "content": userText},
 			{"role": "assistant", "content": assistantText},

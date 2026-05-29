@@ -41,9 +41,9 @@ type memoryState struct {
 	vectorsByModel map[string][]float32
 }
 
-// Reconcile pulls events from .yullu/events/ and applies any that haven't
-// been processed yet for the current project. Also writes create events for
-// any local memories that don't have one (e.g. pre-event rows from before
+// Reconcile pulls entries from .yullu/logs/ and applies any that haven't
+// been processed yet for the current project. Also writes remember entries
+// for any local memories that don't have one (e.g. pre-log rows from before
 // sync was enabled), so the rest of the team can see them.
 //
 // Strategy: two passes over the event log.
@@ -108,7 +108,7 @@ func (s *Server) Reconcile(ctx context.Context) (*ReconcileResult, error) {
 
 	for _, entry := range entries {
 		e := entry.Event
-		if e.Type == memlog.EventCreate {
+		if e.Type == memlog.EventRemember {
 			knownCreates[e.MemoryID] = true
 		}
 		if entry.Filename <= watermark {
@@ -154,7 +154,7 @@ func (s *Server) Reconcile(ctx context.Context) (*ReconcileResult, error) {
 				vectors = map[string][]float32{ourEmbedderID: vec}
 			}
 		}
-		event := memlog.NewCreateEvent(m.UUID, m.Content, m.Tags, vectors)
+		event := memlog.NewRememberEvent(m.UUID, m.Content, m.Tags, vectors)
 		if err := s.writer.Write(event); err != nil {
 			return res, fmt.Errorf("publish local-only memory %s: %w", m.UUID, err)
 		}
@@ -182,14 +182,14 @@ func (s *Server) Reconcile(ctx context.Context) (*ReconcileResult, error) {
 func (s *Server) applyEventToState(entry memlog.Entry, st *memoryState, ourEmbedderID string, ourDim int) {
 	e := entry.Event
 	switch e.Type {
-	case memlog.EventCreate:
+	case memlog.EventRemember:
 		st.deleted = false
 		st.contentSet = true
 		st.content = derefString(e.Content)
 		st.tagsSet = true
 		st.tags = derefStrings(e.Tags)
 		st.vectorsByModel = s.acceptVectors(entry, e.Vectors, ourEmbedderID, ourDim, nil)
-	case memlog.EventUpdate:
+	case memlog.EventRevise:
 		st.deleted = false
 		if e.Content != nil {
 			// Content change wipes old vectors.
@@ -204,7 +204,7 @@ func (s *Server) applyEventToState(entry memlog.Entry, st *memoryState, ourEmbed
 			st.tagsSet = true
 			st.tags = *e.Tags
 		}
-	case memlog.EventDelete:
+	case memlog.EventForget:
 		st.deleted = true
 	}
 }
@@ -302,7 +302,7 @@ func (s *Server) applyState(ctx context.Context, projectID, memoryUUID string, s
 	}
 
 	if existing == nil {
-		if _, err := s.store.Insert(ctx, memoryUUID, projectID, content, tags, vec); err != nil {
+		if _, err := s.store.Insert(ctx, memoryUUID, projectID, content, tags, vec, ""); err != nil {
 			return err
 		}
 		res.Created++

@@ -9,7 +9,11 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from "
 import { useProjects } from "./queries";
 
 // "" = "all projects". Aligns with how the backend interprets an empty
-// project_id (no filter).
+// project_id (no filter). The picker exposes a "" string to consumers;
+// internally we use `null` to mean "not initialised yet" so the auto-
+// default effect can distinguish "user picked All projects" (which we
+// must respect) from "first load, no choice made" (default to the first
+// project so a brand-new install has something to look at).
 type ProjectScope = {
   project: string;
   setProject: (p: string) => void;
@@ -21,16 +25,22 @@ const STORAGE_KEY = "yullu.project";
 
 export function ProjectScopeProvider({ children }: { children: ReactNode }) {
   const { data: projects } = useProjects();
-  const [project, setProjectState] = useState<string>(() => {
-    if (typeof window === "undefined") return "";
-    return window.localStorage.getItem(STORAGE_KEY) ?? "";
+  // null = no choice yet; string (incl. "") = the user's chosen scope.
+  // localStorage having the key (even with value "") means a choice was
+  // made on a previous visit, so we honour "" as "All projects".
+  const [project, setProjectState] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    return raw === null ? null : raw;
   });
 
-  // Default to the first project once the list lands. Skips if the user
-  // already picked one (including "all projects" via the picker).
+  // Default to the first project once the list lands, but ONLY if the
+  // user hasn't made a choice yet. Previously this also ran whenever
+  // `project === ""`, which silently clobbered explicit "All projects"
+  // back to projects[0] on every re-render.
   useEffect(() => {
+    if (project !== null) return;
     if (!projects || projects.length === 0) return;
-    if (project) return; // user has a value (real or persisted)
     setProjectState(projects[0]);
   }, [projects, project]);
 
@@ -41,7 +51,10 @@ export function ProjectScopeProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  return <Ctx.Provider value={{ project, setProject }}>{children}</Ctx.Provider>;
+  // Surface "" to consumers while we're still null — keeps the existing
+  // contract (project: string) and the backend's "" = all-projects
+  // convention. Once the effect lands, the real value replaces it.
+  return <Ctx.Provider value={{ project: project ?? "", setProject }}>{children}</Ctx.Provider>;
 }
 
 export function useProjectScope(): ProjectScope {

@@ -81,7 +81,7 @@ to pull the relevant ones back. Memories are:
 - **Indexed by embedding vector** in SQLite via `sqlite-vec`, so retrieval
   is semantic, not keyword.
 - **Optionally synced across teammates** via an event log committed to the
-  repo at `<repo>/.yullu/events/`.
+  repo at `<repo>/.yullu/logs/`.
 - **Optionally dreamed** - the server can review recorded conversation
   turns and extract durable memories without the LLM having to call
   `store_memory` explicitly.
@@ -129,7 +129,7 @@ api_key = ""     # blank reads $ANTHROPIC_API_KEY
 api_key = ""     # blank reads $VOYAGE_API_KEY
 
 [sync]
-enabled = true                    # write/read .yullu/events
+enabled = true                    # write/read .yullu/logs
 dir = ".yullu"
 log_embeddings = true             # publish your computed vectors
 reuse_embeddings = true           # accept teammates' vectors when model matches
@@ -163,7 +163,7 @@ also accepts `YULLU_TRANSPORT=http` and
 - **Database**: `$YULLU_DB`, else `$XDG_DATA_HOME/yullu/memories.db`,
   else `~/.local/share/yullu/memories.db`. One DB per user, shared
   across every repo you use the binary in - rows are scoped by `project_id`.
-- **Event log**: `<repo>/.yullu/events/`, one JSON file per event. This
+- **Event log**: `<repo>/.yullu/logs/`, one JSON file per event. This
   is what teammates see; the database is per-machine.
 
 ## MCP tools
@@ -182,7 +182,7 @@ also accepts `YULLU_TRANSPORT=http` and
 
 ## Team sync via `.yullu/`
 
-When `[sync].enabled = true`, the server treats `<repo>/.yullu/events/`
+When `[sync].enabled = true`, the server treats `<repo>/.yullu/logs/`
 as an append-only log of memory mutations.
 
 **What's in it.** One JSON file per event. Filenames are time-sortable with
@@ -227,7 +227,7 @@ extracts those memories without the LLM (or the human) having to call
 1. The LLM calls `record_messages` after each turn (or in batches), pushing
    `{session_id, [{role, content}, …]}` into a local `session_messages`
    table. The raw text never leaves the local DB - it's not written to
-   `.yullu/events/`.
+   `.yullu/logs/`.
 2. On a schedule (or on demand via `dream_now`), the server pulls
    unprocessed messages for each session plus the most recently updated
    memories for the project, and asks the **reasoner** to return a JSON
@@ -244,7 +244,7 @@ extracts those memories without the LLM (or the human) having to call
    ```
 
 3. Each op is applied via the same write path as a direct LLM call - so
-   dreamed memories show up in `.yullu/events/` and propagate to
+   dreamed memories show up in `.yullu/logs/` and propagate to
    teammates exactly like memories created by `store_memory`.
 4. Processed messages are deleted from the local DB. Memories live; the
    conversation that produced them does not.
@@ -324,7 +324,7 @@ cmd/
    ├─ store              SQLite + sqlite-vec, schema migration, CRUD; also
    │                     holds the session_messages dream buffer
    ├─ scope              resolves project_id from git remote / path
-   ├─ memlog             event log writer + reader for .yullu/events/
+   ├─ memlog             event log writer + reader for .yullu/logs/
    └─ server             MCP tool handlers, reconcile + dream algorithms.
                          Server.callReasoner tries MCP sampling first, then
                          falls back to the configured direct Reasoner.

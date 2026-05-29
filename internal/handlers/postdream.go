@@ -9,15 +9,17 @@ import (
 
 type PostDreamHandler struct {
 	dreamer Dreamer
-	// contextMemories is the number of recent memories the reasoner sees per
-	// pass. Stored on the handler so it tracks the user's [dreaming] config
-	// at construction time; if SaveConfig changes it, the handler is rebuilt.
-	contextMemories int
+	// contextMemories is a thunk that returns the current [dreaming]
+	// .context_memories value. Re-evaluated on every request so a
+	// SaveConfig that changes the limit takes effect immediately —
+	// previously this captured the value at construction time and went
+	// stale until the routes were rebuilt.
+	contextMemories func() int
 }
 
 type PostDreamHandlerParams struct {
 	Dreamer         Dreamer
-	ContextMemories int
+	ContextMemories func() int
 }
 
 func NewPostDreamHandler(params PostDreamHandlerParams) *PostDreamHandler {
@@ -35,7 +37,7 @@ func (h *PostDreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	result, err := h.dreamer.Dream(r.Context(), server.DreamOptions{
 		ProjectID:       body.ProjectID,
-		ContextMemories: h.contextMemories,
+		ContextMemories: h.contextMemories(),
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)

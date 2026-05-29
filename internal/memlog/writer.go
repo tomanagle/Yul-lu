@@ -8,18 +8,18 @@ import (
 	"strings"
 )
 
-// Writer persists events to a .yullu/events/ directory.
+// Writer persists memory-log entries to a .yullu/logs/ directory.
 //
 // Construct with NewWriter(gitRoot, syncDir). It's safe to use from a single
 // goroutine; concurrent writers to the same directory are fine across
-// processes because each event gets a unique filename.
+// processes because each entry gets a unique filename.
 type Writer struct {
-	eventsDir string
+	logsDir string
 }
 
-// NewWriter returns a writer that places events under <gitRoot>/<syncDir>/events.
+// NewWriter returns a writer that places entries under <gitRoot>/<syncDir>/logs.
 // The directory is created on demand. Returns nil if gitRoot is empty - the
-// caller should check and skip event logging in that case.
+// caller should check and skip logging in that case.
 func NewWriter(gitRoot, syncDir string) *Writer {
 	if gitRoot == "" {
 		return nil
@@ -27,60 +27,60 @@ func NewWriter(gitRoot, syncDir string) *Writer {
 	if syncDir == "" {
 		syncDir = ".yullu"
 	}
-	return &Writer{eventsDir: filepath.Join(gitRoot, syncDir, "events")}
+	return &Writer{logsDir: filepath.Join(gitRoot, syncDir, "logs")}
 }
 
-// Dir returns the absolute path of the events directory.
-func (w *Writer) Dir() string { return w.eventsDir }
+// Dir returns the absolute path of the logs directory.
+func (w *Writer) Dir() string { return w.logsDir }
 
 // Write serializes e as JSON and writes it to a uniquely named file in the
-// events directory. The filename is "<iso-timestamp>-<short-id>.json" so the
+// logs directory. The filename is "<iso-timestamp>-<short-id>.json" so the
 // directory listing sorts lexically by time.
 //
 // The write is atomic on POSIX (write to a temp file in the same dir, then
-// rename), so readers never observe a half-written event.
+// rename), so readers never observe a half-written entry.
 func (w *Writer) Write(e Event) error {
-	if err := os.MkdirAll(w.eventsDir, 0o755); err != nil {
-		return fmt.Errorf("create events dir: %w", err)
+	if err := os.MkdirAll(w.logsDir, 0o755); err != nil {
+		return fmt.Errorf("create logs dir: %w", err)
 	}
 
 	data, err := json.MarshalIndent(e, "", "  ")
 	if err != nil {
-		return fmt.Errorf("marshal event: %w", err)
+		return fmt.Errorf("marshal entry: %w", err)
 	}
 	data = append(data, '\n')
 
 	name := filename(e)
-	final := filepath.Join(w.eventsDir, name)
-	tmp, err := os.CreateTemp(w.eventsDir, ".tmp-"+name+"-*")
+	final := filepath.Join(w.logsDir, name)
+	tmp, err := os.CreateTemp(w.logsDir, ".tmp-"+name+"-*")
 	if err != nil {
-		return fmt.Errorf("create temp event: %w", err)
+		return fmt.Errorf("create temp entry: %w", err)
 	}
 	tmpPath := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		os.Remove(tmpPath)
-		return fmt.Errorf("write event: %w", err)
+		return fmt.Errorf("write entry: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("close event: %w", err)
+		return fmt.Errorf("close entry: %w", err)
 	}
 	if err := os.Rename(tmpPath, final); err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("commit event: %w", err)
+		return fmt.Errorf("commit entry: %w", err)
 	}
 	return nil
 }
 
-// filename returns a sortable, filesystem-safe filename for the event.
+// filename returns a sortable, filesystem-safe filename for the entry.
 // Format: 20060102T150405.000000000Z-<8-char-id>.json
 //
-// Nanosecond precision matters: events produced in rapid succession (e.g. a
-// create followed by its embedding event) must order deterministically by
+// Nanosecond precision matters: entries produced in rapid succession (e.g. a
+// remember followed by its embedding revise) must order deterministically by
 // filename, since lexical sort is how reconcile decides which embedding
 // matches which content snapshot. Millisecond precision is not enough - two
-// events on a fast machine routinely land in the same millisecond, leaving
+// entries on a fast machine routinely land in the same millisecond, leaving
 // the UUID suffix to decide order at random.
 func filename(e Event) string {
 	ts := e.Timestamp.UTC().Format("20060102T150405.000000000Z07:00")

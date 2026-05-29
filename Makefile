@@ -17,7 +17,7 @@ FRONTEND_DIST := $(FRONTEND_DIR)/dist
 
 .DEFAULT_GOAL := help
 
-.PHONY: help start dev build install run register smoke \
+.PHONY: help start dev build install refresh run register smoke \
         test tidy fmt vet clean frontend-deps frontend-build ensure-dist \
         air-install ensure-bun
 
@@ -35,13 +35,16 @@ help: ## Show available targets
 # the LLM up.
 # ---------------------------------------------------------------------------
 
-start: install ## Build + launch the desktop server (http://localhost:47823)
+# YULLU_OPEN_BROWSER=1 tells the binary to launch the host's default browser
+# at the dashboard URL once the listener is bound. Bare `yullu` (or a service
+# unit) leaves it unset, so no surprise window outside of `make start`.
+start: install ## Build + launch the desktop server (http://localhost:47823) and open it in the browser
 	@echo
 	@echo "yullu starting at http://localhost:47823"
 	@echo "MCP endpoint:           http://localhost:47823/mcp"
 	@echo "Register with Claude:   claude mcp add yullu --transport http http://localhost:47823/mcp"
 	@echo
-	$(INSTALLED)
+	YULLU_OPEN_BROWSER=1 $(INSTALLED)
 
 # ---------------------------------------------------------------------------
 # Dev loop - vite serves the frontend on :5173 with HMR; Go server runs on
@@ -49,10 +52,10 @@ start: install ## Build + launch the desktop server (http://localhost:47823)
 # Open http://localhost:5173 - NOT 47823 - during dev.
 # ---------------------------------------------------------------------------
 
-dev: air-install frontend-deps ensure-dist ## Hot-reload dev: vite (:47824) + air-rebuilt Go server (:47823)
+dev: air-install frontend-deps ensure-dist ## Hot-reload dev: vite (:47824) + air-rebuilt Go server (:47823), opens browser
 	@echo ""
 	@echo "  ┌─────────────────────────────────────────────────────────┐"
-	@echo "  │  Open  http://localhost:47824  in your browser          │"
+	@echo "  │  Opening  http://localhost:47824  in your browser…      │"
 	@echo "  │  (vite dev server with hot module reload)               │"
 	@echo "  │                                                         │"
 	@echo "  │  NOT :47823 — that's the embedded prod build, no HMR.   │"
@@ -86,6 +89,28 @@ build: frontend-build ## Compile to ./bin/yullu
 install: frontend-build ## Build + install to $$GOPATH/bin/yullu
 	go build -tags $(GO_TAGS) -o $(INSTALLED) .
 	@echo "installed $(INSTALLED)"
+
+# refresh rebuilds the Go binary AND re-points the Stop hook at it. Use
+# this whenever the hook is firing a stale build and you can't tell why —
+# e.g. after editing record_turn.go, install.go, or anything in the
+# resolveProjectID chain. Or when `yullu install` was last run from
+# ./bin/yullu instead of $GOPATH/bin/yullu and the hook now points at the
+# wrong path.
+#
+# Skips the frontend rebuild — the hook doesn't care about the UI bundle.
+# Depends on ensure-dist so //go:embed all:frontend/dist still resolves.
+# Run `make build` separately if you also want the latest UI baked in.
+#
+# Non-interactive: --yes --no-service skip the launchd/systemd prompt.
+# Run `yullu install --service` by hand if you want the auto-start unit.
+refresh: ensure-dist ## Rebuild the Go binary + re-point the Stop hook at it (no frontend rebuild)
+	go build -tags $(GO_TAGS) -o $(INSTALLED) .
+	@echo "installed $(INSTALLED)"
+	@echo
+	@echo "Re-installing Stop hook to use $(INSTALLED)…"
+	$(INSTALLED) install --yes --no-service
+	@echo
+	@echo "Done. If make dev / make start is running, restart it so the HTTP server picks up the new build too."
 
 run: install ## Build and run the server
 	$(INSTALLED)
