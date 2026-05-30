@@ -59,12 +59,19 @@ type memoryState struct {
 // Safe to call repeatedly: events <= the stored watermark are skipped, the
 // apply step is idempotent (insert-or-update by UUID), and delete of a
 // missing memory is a no-op.
-func (s *Server) Reconcile(ctx context.Context) (*ReconcileResult, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return nil, fmt.Errorf("resolve cwd: %w", err)
-	}
-	projectID, err := scope.Resolve(cwd)
+// Reconcile syncs one project's local store with its .yullu/logs/
+// directory. Both projectOverride and callerCwd may be empty — the
+// resolver picks: explicit override → caller cwd → server cwd. The
+// gitRoot used to read/write events comes from the project_locations
+// registry when available, falling back to scope.GitRoot of whichever
+// cwd we resolved.
+//
+// Bug history: prior to multi-project routing this only ever reconciled
+// the server's own cwd. With multiple projects in one yullu instance,
+// every project except the launch-cwd one accumulated unprocessed
+// .yullu/logs/ entries forever.
+func (s *Server) Reconcile(ctx context.Context, projectOverride, callerCwd string) (*ReconcileResult, error) {
+	projectID, err := s.resolveProjectID(projectOverride, callerCwd)
 	if err != nil {
 		return nil, fmt.Errorf("resolve project: %w", err)
 	}
@@ -75,7 +82,20 @@ func (s *Server) Reconcile(ctx context.Context) (*ReconcileResult, error) {
 	// right directory. Global config is the fallback for unknown projects.
 	syncCfg := s.resolveProject(projectID).Sync
 
-	gitRoot := scope.GitRoot(cwd)
+	// Resolve git root: registry first, then caller's cwd, then server's.
+	gitRoot, err := s.store.ProjectGitRoot(ctx, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("lookup project location: %w", err)
+	}
+	if gitRoot == "" {
+		seed := callerCwd
+		if seed == "" {
+			if cwd, werr := os.Getwd(); werr == nil {
+				seed = cwd
+			}
+		}
+		gitRoot = scope.GitRoot(seed)
+	}
 	if gitRoot == "" || !syncCfg.Enabled {
 		res.NoEventDir = true
 		return res, nil
@@ -122,7 +142,7 @@ func (s *Server) Reconcile(ctx context.Context) (*ReconcileResult, error) {
 			states[e.MemoryID] = st
 			uuidOrder = append(uuidOrder, e.MemoryID)
 		}
-		s.applyEventToState(entry, st, ourEmbedderID, ourDim)
+		s.applyEventToState(entry, st, projectID, ourEmbedderID, ourDim)
 	}
 
 	// Pass 2: apply target state per UUID.
@@ -147,7 +167,7 @@ func (s *Server) Reconcile(ctx context.Context) (*ReconcileResult, error) {
 		// inside the create event so teammates with the same model can
 		// reuse it immediately.
 		vectors := map[string][]float32(nil)
-		if s.cfg.Sync.LogEmbeddings {
+		if s.resolveProject(projectID).Sync.LogEmbeddings {
 			vec, err := s.store.GetVector(ctx, m.ID)
 			if err != nil {
 				s.logger.Warn("read local vector failed", "uuid", m.UUID, "err", err.Error())
@@ -180,7 +200,7 @@ func (s *Server) Reconcile(ctx context.Context) (*ReconcileResult, error) {
 //     event's vectors become the new starting set.
 //   - Update with no content: merge this event's vectors into the existing map.
 //   - Delete: tombstone wins until a later create resurrects.
-func (s *Server) applyEventToState(entry memlog.Entry, st *memoryState, ourEmbedderID string, ourDim int) {
+func (s *Server) applyEventToState(entry memlog.Entry, st *memoryState, projectID, ourEmbedderID string, ourDim int) {
 	e := entry.Event
 	switch e.Type {
 	case memlog.EventRemember:
@@ -189,17 +209,17 @@ func (s *Server) applyEventToState(entry memlog.Entry, st *memoryState, ourEmbed
 		st.content = derefString(e.Content)
 		st.tagsSet = true
 		st.tags = derefStrings(e.Tags)
-		st.vectorsByModel = s.acceptVectors(entry, e.Vectors, ourEmbedderID, ourDim, nil)
+		st.vectorsByModel = s.acceptVectors(entry, projectID, e.Vectors, ourEmbedderID, ourDim, nil)
 	case memlog.EventRevise:
 		st.deleted = false
 		if e.Content != nil {
 			// Content change wipes old vectors.
 			st.contentSet = true
 			st.content = *e.Content
-			st.vectorsByModel = s.acceptVectors(entry, e.Vectors, ourEmbedderID, ourDim, nil)
+			st.vectorsByModel = s.acceptVectors(entry, projectID, e.Vectors, ourEmbedderID, ourDim, nil)
 		} else if e.Vectors != nil {
 			// No content change; merge new vectors into the existing map.
-			st.vectorsByModel = s.acceptVectors(entry, e.Vectors, ourEmbedderID, ourDim, st.vectorsByModel)
+			st.vectorsByModel = s.acceptVectors(entry, projectID, e.Vectors, ourEmbedderID, ourDim, st.vectorsByModel)
 		}
 		if e.Tags != nil {
 			st.tagsSet = true
@@ -219,8 +239,11 @@ func (s *Server) applyEventToState(entry memlog.Entry, st *memoryState, ourEmbed
 // Other models' vectors aren't stored in memoryState because reconcile only
 // applies vectors that match the local embedder - but they remain in the
 // event file on disk for teammates.
-func (s *Server) acceptVectors(entry memlog.Entry, incoming map[string][]float32, ourEmbedderID string, ourDim int, base map[string][]float32) map[string][]float32 {
-	if !s.cfg.Sync.ReuseEmbeddings {
+func (s *Server) acceptVectors(entry memlog.Entry, projectID string, incoming map[string][]float32, ourEmbedderID string, ourDim int, base map[string][]float32) map[string][]float32 {
+	// Per-project gating: a project that opted out of reuse_embeddings
+	// must not absorb teammate-published vectors even when global sync
+	// allows reuse.
+	if !s.resolveProject(projectID).Sync.ReuseEmbeddings {
 		return base
 	}
 	vec, ok := incoming[ourEmbedderID]
@@ -336,7 +359,9 @@ func (s *Server) applyState(ctx context.Context, projectID, memoryUUID string, s
 // .yullu/logs/, not the yullu server's cwd. See writerForProject for
 // the lookup logic.
 func (s *Server) publishOwnVector(ctx context.Context, projectID, memoryUUID string, vec []float32) {
-	if !s.cfg.Sync.LogEmbeddings {
+	// Per-project gating: a project that disabled log_embeddings via
+	// override must not leak vectors even when global sync logs them.
+	if !s.resolveProject(projectID).Sync.LogEmbeddings {
 		return
 	}
 	writer := s.writerForProject(ctx, projectID)
@@ -353,8 +378,10 @@ func (s *Server) publishOwnVector(ctx context.Context, projectID, memoryUUID str
 
 // LogReconcile runs Reconcile and logs the result. Convenience wrapper for
 // startup auto-reconcile so main.go stays focused on dependency wiring.
+// callerCwd is empty for startup auto-reconcile (falls back to server cwd);
+// passes through for callers that already know which project to sync.
 func (s *Server) LogReconcile(ctx context.Context) {
-	res, err := s.Reconcile(ctx)
+	res, err := s.Reconcile(ctx, "", "")
 	if err != nil {
 		s.logger.Error("reconcile failed", "err", err.Error())
 		return

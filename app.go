@@ -235,6 +235,16 @@ func (a *App) Status() handlers.Status {
 // partially-swapped store mid-reset.
 func (a *App) Retry() handlers.Status {
 	a.mu.Lock()
+	// Tear down the previous generation completely before openStoreLocked
+	// runs. If it fails partway through (e.g. embedder build errors),
+	// a.srv and a.mcpHandler MUST already be nil — otherwise they keep
+	// pointing at the now-closed store and every /mcp request returns
+	// "sql: database is closed" until app restart.
+	if a.srv != nil {
+		a.srv.StopScheduler()
+		a.srv = nil
+	}
+	a.mcpHandler = nil
 	if a.store != nil {
 		_ = a.store.Close()
 		a.store = nil
@@ -749,12 +759,11 @@ func (a *App) DreamProgress() handlers.DreamProgressView {
 // GetProjectOverrides reads the repo + user override files for projectID,
 // stacks them onto the global config to compute the effective view, and
 // returns all three so the UI can render inherited values as placeholders.
-func (a *App) GetProjectOverrides(_ context.Context, projectID string) (handlers.ProjectOverridesView, error) {
-	a.mu.RLock()
-	cfg := a.cfg
-	a.mu.RUnlock()
+func (a *App) GetProjectOverrides(ctx context.Context, projectID string) (handlers.ProjectOverridesView, error) {
+	snap := a.snapshot()
+	cfg := snap.cfg
 
-	repoOverride, repoWarn := readOverride(config.RepoOverridePath(a.gitRoot()), false)
+	repoOverride, repoWarn := readOverride(config.RepoOverridePath(a.projectGitRoot(ctx, projectID, snap.store)), false)
 	userOverride, userWarn := readOverride(config.UserOverridePath(projectID), true)
 
 	effective := config.Merge(cfg, repoOverride)
@@ -775,7 +784,7 @@ func (a *App) GetProjectOverrides(_ context.Context, projectID string) (handlers
 // API keys are stripped from the repo payload before writing - committed
 // files must not carry secrets. The Server's config cache for this project
 // is invalidated so the next operation picks up the change.
-func (a *App) SaveProjectOverrides(_ context.Context, projectID string, repo, user handlers.ProjectOverridePayload) (handlers.ProjectOverridesView, error) {
+func (a *App) SaveProjectOverrides(ctx context.Context, projectID string, repo, user handlers.ProjectOverridePayload) (handlers.ProjectOverridesView, error) {
 	// Repo payload: drop API keys before persistence.
 	repo.VoyageAPIKey = nil
 	repo.OpenAIAPIKey = nil
@@ -784,7 +793,9 @@ func (a *App) SaveProjectOverrides(_ context.Context, projectID string, repo, us
 	repoOverride := payloadToConfigOverride(repo)
 	userOverride := payloadToConfigOverride(user)
 
-	if path := config.RepoOverridePath(a.gitRoot()); path != "" {
+	snap := a.snapshot()
+	gitRoot := a.projectGitRoot(ctx, projectID, snap.store)
+	if path := config.RepoOverridePath(gitRoot); path != "" {
 		if err := config.WriteOverride(path, repoOverride); err != nil {
 			return handlers.ProjectOverridesView{}, fmt.Errorf("write repo override: %w", err)
 		}
@@ -794,10 +805,30 @@ func (a *App) SaveProjectOverrides(_ context.Context, projectID string, repo, us
 			return handlers.ProjectOverridesView{}, fmt.Errorf("write user override: %w", err)
 		}
 	}
-	if srv := a.snapshot().srv; srv != nil {
-		srv.InvalidateProjectConfig(projectID)
+	if snap.srv != nil {
+		snap.srv.InvalidateProjectConfig(projectID)
 	}
-	return a.GetProjectOverrides(context.Background(), projectID)
+	return a.GetProjectOverrides(ctx, projectID)
+}
+
+// projectGitRoot finds the local git root for projectID. Consults the
+// project_locations registry first (populated whenever a client call
+// arrives with a cwd) and only falls back to the server's own cwd as a
+// last resort.
+//
+// Bug history: the prior version used a.gitRoot() unconditionally,
+// which returned the directory yullu was launched from. Reading or
+// writing project B's repo-layer overrides while the server ran out of
+// project A's directory silently corrupted project A's
+// .yullu/config.toml. Same root cause as the writer-per-project fix,
+// missed on the override path.
+func (a *App) projectGitRoot(ctx context.Context, projectID string, st *store.Store) string {
+	if st != nil && projectID != "" {
+		if root, err := st.ProjectGitRoot(ctx, projectID); err == nil && root != "" {
+			return root
+		}
+	}
+	return a.gitRoot()
 }
 
 // gitRoot returns the working tree the desktop server was launched from.

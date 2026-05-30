@@ -240,7 +240,9 @@ func (s *Server) registerTools() {
 	), s.handleRecordMessages)
 
 	s.mcp.AddTool(mcp.NewTool("reconcile_memories",
-		mcp.WithDescription("Sync local memories with the .yullu/ event log. Pulls events committed by teammates, applies them locally, and publishes any local-only memories so others can see them. Safe to run repeatedly."),
+		mcp.WithDescription("Sync local memories with the .yullu/logs/ event log for the caller's project. Pulls events committed by teammates, applies them locally, and publishes any local-only memories so others can see them. Safe to run repeatedly. Pass cwd (and/or project_id) to scope to your project — otherwise reconciles only the directory yullu was launched from."),
+		mcp.WithString("project_id", mcp.Description("Override project scope.")),
+		mcp.WithString("cwd", mcp.Description("Caller's working directory; resolves the project when project_id isn't set.")),
 	), s.handleReconcile)
 
 	s.mcp.AddTool(mcp.NewTool("get_usage",
@@ -366,11 +368,16 @@ func (s *Server) writerForProject(ctx context.Context, projectID string) *memlog
 	return memlog.NewWriter(root, syncCfg.Dir)
 }
 
-// ownVectors returns a single-entry vectors map for our embedder ID, or nil
-// if vec is nil or LogEmbeddings is disabled. Used by handlers to attach a
-// vector to a create/update event.
-func (s *Server) ownVectors(vec []float32) map[string][]float32 {
-	if vec == nil || !s.cfg.Sync.LogEmbeddings {
+// ownVectors returns a single-entry vectors map for our embedder ID, or
+// nil if vec is nil or LogEmbeddings is disabled for the given project.
+// Per-project gating: a project that opts out of vector publishing
+// via [sync].log_embeddings = false in its override file must not leak
+// embeddings into the shared event log, even when global sync logs them.
+func (s *Server) ownVectors(projectID string, vec []float32) map[string][]float32 {
+	if vec == nil {
+		return nil
+	}
+	if !s.resolveProject(projectID).Sync.LogEmbeddings {
 		return nil
 	}
 	return map[string][]float32{s.embedder.ID(): vec}
@@ -417,7 +424,7 @@ func (s *Server) createMemory(ctx context.Context, projectID, content string, ta
 		return "", 0, fmt.Errorf("embedder returned %d vectors, expected 1", len(vecs))
 	}
 	memUUID := uuid.NewString()
-	event := memlog.NewRememberEvent(memUUID, content, tags, s.ownVectors(vecs[0]))
+	event := memlog.NewRememberEvent(memUUID, content, tags, s.ownVectors(projectID, vecs[0]))
 	if err := s.logEventFor(ctx, projectID, event); err != nil {
 		return "", 0, fmt.Errorf("log create event: %w", err)
 	}
@@ -446,7 +453,7 @@ func (s *Server) updateMemoryByUUID(ctx context.Context, memUUID string, content
 		}
 		newVec = vecs[0]
 	}
-	event := memlog.NewReviseEvent(memUUID, contentPtr, tagsPtr, s.ownVectors(newVec))
+	event := memlog.NewReviseEvent(memUUID, contentPtr, tagsPtr, s.ownVectors(existing.ProjectID, newVec))
 	if err := s.logEventFor(ctx, existing.ProjectID, event); err != nil {
 		return nil, fmt.Errorf("log update event: %w", err)
 	}
@@ -567,9 +574,23 @@ func (s *Server) handleDelete(ctx context.Context, req mcp.CallToolRequest) (*mc
 func (s *Server) handleDreamNow(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	// dream_now bypasses min_messages - explicit manual triggers should
 	// process whatever's in the buffer, even small sessions.
+	//
+	// Per-project resolution: a project that overrides
+	// [dreaming].context_memories must see its own value, not the
+	// global default. Bug history: the prior version read
+	// s.cfg.Dreaming.ContextMemories unconditionally, so MCP dream_now
+	// ignored overrides that every other dream-firing path honoured.
+	projectOverride := req.GetString("project_id", "")
+	callerCwd := req.GetString("cwd", "")
+	projectID, err := s.resolveProjectID(projectOverride, callerCwd)
+	if err != nil {
+		return mcp.NewToolResultErrorFromErr("resolve project", err), nil
+	}
+	dc := s.resolveProject(projectID).Dreaming
 	res, err := s.Dream(ctx, DreamOptions{
+		ProjectID:       projectID,
 		SessionFilter:   req.GetString("session_id", ""),
-		ContextMemories: s.cfg.Dreaming.ContextMemories,
+		ContextMemories: dc.ContextMemories,
 	})
 	if err != nil {
 		return mcp.NewToolResultErrorFromErr("dream", err), nil
@@ -669,8 +690,10 @@ func (s *Server) lastMessageTime() time.Time {
 	return s.lastMessageRecordedAt
 }
 
-func (s *Server) handleReconcile(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	res, err := s.Reconcile(ctx)
+func (s *Server) handleReconcile(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	// Forward project_id / cwd so reconcile lands on the caller's
+	// project, not the yullu server's cwd.
+	res, err := s.Reconcile(ctx, req.GetString("project_id", ""), req.GetString("cwd", ""))
 	if err != nil {
 		return mcp.NewToolResultErrorFromErr("reconcile", err), nil
 	}

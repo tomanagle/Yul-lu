@@ -547,16 +547,25 @@ func (s *Server) scheduleTick(ctx context.Context, now time.Time) {
 		if !s.shouldDreamProject(now, lastDream, lastMsg, interval, idle) {
 			continue
 		}
-		// Only advance lastScheduledDreamAt when an actual pass ran. If
-		// Dream returns Skipped (single-flight collision with a manual
-		// dream_now or a longer-running prior pass), we leave the
-		// timestamp alone so the next tick reconsiders this project
-		// instead of losing an interval.
-		if ran := s.runScheduledDream(ctx, projectID, dc); ran {
-			s.lastScheduledDreamAtMu.Lock()
-			s.lastScheduledDreamAt[projectID] = now
-			s.lastScheduledDreamAtMu.Unlock()
-		}
+		// Advance the timestamp BEFORE dispatching. Two reasons:
+		//
+		//  1. If Dream returns Skipped (dreamMu held by a long pass),
+		//     leaving the timestamp alone causes the scheduler to
+		//     re-dispatch this project on every tick — `O(projects ×
+		//     ticks)` goroutines piling up on TryLock during a multi-
+		//     minute dream pass. Advancing here drains that storm.
+		//
+		//  2. The "intent to dream at `now`" is recorded regardless of
+		//     whether the lock-holder happened to be us. Next interval
+		//     fires cleanly from this point.
+		//
+		// Trade-off: an interval is "lost" when Dream is skipped. The
+		// idle trigger picks up the slack — if buffered messages are
+		// still there, the next tick will refire via the idle path.
+		s.lastScheduledDreamAtMu.Lock()
+		s.lastScheduledDreamAt[projectID] = now
+		s.lastScheduledDreamAtMu.Unlock()
+		s.runScheduledDream(ctx, projectID, dc)
 	}
 }
 

@@ -106,9 +106,8 @@ type RejectedMemory struct {
 
 // Store wraps the database and the configured embedding dimension.
 type Store struct {
-	db                   *sql.DB
-	dim                  int
-	recordMemoryEventErr error // last error from recordMemoryEvent (best-effort logging)
+	db  *sql.DB
+	dim int
 }
 
 // OpenReadOnly opens an existing store without requiring the caller to
@@ -1349,11 +1348,12 @@ func (s *Store) recordMemoryEvent(ctx context.Context, kind MemoryEventKind, mem
 	if memoryID > 0 {
 		memArg = sql.NullInt64{Int64: memoryID, Valid: true}
 	}
-	if _, err := s.db.ExecContext(ctx,
+	// Telemetry write — best-effort. Drop errors on the floor; the
+	// canonical record is the operation that triggered this event,
+	// which already succeeded or rolled back.
+	_, _ = s.db.ExecContext(ctx,
 		`INSERT INTO memory_events(at, memory_id, project_id, kind, metadata_json) VALUES (?, ?, ?, ?, ?)`,
-		time.Now().Unix(), memArg, projectID, string(kind), metaJSON); err != nil {
-		s.recordMemoryEventErr = err
-	}
+		time.Now().Unix(), memArg, projectID, string(kind), metaJSON)
 }
 
 // SessionMessage is one stored conversation turn awaiting dreaming.
@@ -2189,7 +2189,8 @@ func (s *Store) RecordDreamPass(ctx context.Context, rec DreamPassRecord) {
 			errsJSON = sql.NullString{String: string(b), Valid: true}
 		}
 	}
-	if _, err := s.db.ExecContext(ctx,
+	// Best-effort telemetry — see recordMemoryEvent for the same pattern.
+	_, _ = s.db.ExecContext(ctx,
 		`INSERT INTO dream_passes(
 			at, project_id,
 			sessions_processed, messages_processed,
@@ -2200,9 +2201,7 @@ func (s *Store) RecordDreamPass(ctx context.Context, rec DreamPassRecord) {
 		rec.SessionsProcessed, rec.MessagesProcessed,
 		rec.OpsCreated, rec.OpsUpdated, rec.OpsDeleted, rec.OpsSkipped,
 		errsJSON,
-	); err != nil {
-		s.recordMemoryEventErr = err
-	}
+	)
 }
 
 // DreamPass is one row from the dream_passes table — the per-cycle

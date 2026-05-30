@@ -379,20 +379,29 @@ function DreamResultPanel({ result }: { result: DreamResult }) {
 function ScheduleCard() {
   const { data: initial } = useConfig();
   const [cfg, setCfg] = useState<ConfigView | null>(null);
+  // Dirty flag stops a background useConfig refetch from clobbering
+  // pending user edits. Resets onSubmit so the post-save invalidation
+  // can refresh local state to the persisted server snapshot.
+  const [dirty, setDirty] = useState(false);
   const save = useSaveConfig();
 
   useEffect(() => {
-    if (initial && !cfg) setCfg(initial);
-  }, [initial, cfg]);
+    if (!initial) return;
+    if (!cfg || !dirty) setCfg(initial);
+  }, [initial, cfg, dirty]);
 
   if (!cfg) return null;
 
-  const update = (patch: Partial<ConfigView>) => setCfg({ ...cfg, ...patch });
+  const update = (patch: Partial<ConfigView>) => {
+    setCfg({ ...cfg, ...patch });
+    setDirty(true);
+  };
 
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
+        setDirty(false);
         save.mutate(cfg);
       }}
     >

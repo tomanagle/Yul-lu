@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import {
   useConfig,
@@ -140,15 +140,33 @@ function TabButton({ active, onClick, children, disabled, title }: TabButtonProp
 function GlobalSettings() {
   const { data: initial } = useConfig();
   const [cfg, setCfg] = useState<ConfigView | null>(null);
-  const save = useSaveConfig();
+  // Tracks whether the user has touched the form since the last server
+  // sync. Prevents `useEffect` below from clobbering an in-progress edit
+  // with a freshly-refetched server snapshot — but DOES adopt the new
+  // snapshot once the user is clean (e.g. after a successful save the
+  // mutation invalidates, the query refetches, and we should display
+  // the persisted values verbatim).
+  const [dirty, setDirty] = useState(false);
+  const save = useSaveConfig({
+    onSuccess: () => setDirty(false),
+  });
 
   useEffect(() => {
-    if (initial && !cfg) setCfg(initial);
-  }, [initial, cfg]);
+    if (!initial) return;
+    // Initial hydration OR server-driven refresh while the form is
+    // clean. The `!dirty` guard avoids clobbering pending user edits;
+    // without it, post-save invalidation would still overwrite from
+    // the server (which is fine, but a stale tab triggering invalidation
+    // during typing would wipe in-flight changes).
+    if (!cfg || !dirty) setCfg(initial);
+  }, [initial, cfg, dirty]);
 
   if (!cfg) return <p className="text-sm text-muted-foreground">Loading…</p>;
 
-  const update = (patch: Partial<ConfigView>) => setCfg({ ...cfg, ...patch });
+  const update = (patch: Partial<ConfigView>) => {
+    setCfg({ ...cfg, ...patch });
+    setDirty(true);
+  };
 
   return (
     <form
@@ -397,28 +415,39 @@ function ProjectSettings({ projectID }: ProjectSettingsProps) {
   // back unchanged for fields the user didn't touch.
   const [repo, setRepo] = useState<ProjectOverridePayload | null>(null);
   const [user, setUser] = useState<ProjectOverridePayload | null>(null);
+  // Dirty flag prevents server-driven refetches from clobbering pending
+  // user edits. After a successful save the dirty flag resets and the
+  // form re-syncs to the persisted server snapshot.
+  const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
-    if (overrides && repo === null && user === null) {
+    if (!overrides) return;
+    // First hydration OR a clean refresh after save. Don't overwrite
+    // mid-edit state.
+    if ((repo === null && user === null) || !dirty) {
       setRepo({ ...overrides.repo });
       setUser({ ...overrides.user });
     }
-  }, [overrides, repo, user]);
+  }, [overrides, repo, user, dirty]);
 
   const effective = overrides?.effective;
 
-  const repoSet = useMemo(
-    () =>
-      <K extends keyof ProjectOverridePayload>(k: K, v: ProjectOverridePayload[K] | undefined) => {
-        setRepo((prev) => ({ ...prev, [k]: v }));
-      },
+  // useCallback is the right tool here — useMemo would also work but
+  // obscures intent. Empty deps because setRepo/setUser identity is
+  // stable. The generic-typed inner arrow needs the trailing comma in
+  // TSX (`<K,>`) to disambiguate from JSX.
+  const repoSet = useCallback(
+    <K extends keyof ProjectOverridePayload,>(k: K, v: ProjectOverridePayload[K] | undefined) => {
+      setRepo((prev) => (prev === null ? prev : { ...prev, [k]: v }));
+      setDirty(true);
+    },
     [],
   );
-  const userSet = useMemo(
-    () =>
-      <K extends keyof ProjectOverridePayload>(k: K, v: ProjectOverridePayload[K] | undefined) => {
-        setUser((prev) => ({ ...prev, [k]: v }));
-      },
+  const userSet = useCallback(
+    <K extends keyof ProjectOverridePayload,>(k: K, v: ProjectOverridePayload[K] | undefined) => {
+      setUser((prev) => (prev === null ? prev : { ...prev, [k]: v }));
+      setDirty(true);
+    },
     [],
   );
 
@@ -431,6 +460,12 @@ function ProjectSettings({ projectID }: ProjectSettingsProps) {
       className="space-y-4"
       onSubmit={(e) => {
         e.preventDefault();
+        // Mark clean immediately so the next useConfig refetch (triggered
+        // by the mutation's invalidation) is allowed to overwrite local
+        // state with the persisted server snapshot. Doing it onSubmit
+        // rather than onSuccess avoids briefly showing the pre-save
+        // value during the in-flight window.
+        setDirty(false);
         save.mutate({ repo, user });
       }}
     >
@@ -580,13 +615,17 @@ function OverrideField({
           <Label className="cursor-pointer text-[11px] text-muted-foreground">Override</Label>
           <Switch
             checked={overridden}
-            onCheckedChange={(on) => onChange(on ? (value ?? "") : undefined)}
+            // Seed the override from the currently-inherited value when
+            // toggling on so the user starts from a sensible state
+            // instead of an empty string. Matches OverrideNumber's
+            // behaviour and prevents accidental wipe of inherited keys.
+            onCheckedChange={(on) => onChange(on ? (value ?? inherited) : undefined)}
           />
         </div>
       </div>
       <Input
         type={password ? "password" : "text"}
-        value={overridden ? (value ?? "") : ""}
+        value={overridden ? (value ?? inherited) : ""}
         onChange={(e) => onChange(e.target.value)}
         placeholder={overridden ? placeholder : `Inherits: ${inherited || "(empty)"}`}
         disabled={!overridden}

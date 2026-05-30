@@ -118,12 +118,18 @@ func runInject() int {
 // Returns nil when the prompt is shape-ambiguous — server then returns
 // from all categories. That's the right default: better to return
 // something useful than to over-filter and return nothing.
+//
+// Matching: short keywords ("ui", "vs") use word-bounded matching on
+// tokenised input to avoid false positives ("ui" inside "suite").
+// Multi-word phrases ("how do i") use substring matching against the
+// raw prompt because tokenisation would break them.
 func inferCategories(prompt string) []string {
 	p := strings.ToLower(prompt)
+	words := tokeniseWords(p)
 	cats := make(map[string]bool, 3)
 
 	// UI / style signals
-	if containsAny(p, "ui", "component", "button", "card", "modal", "color", "colour",
+	if hasWord(words, "ui", "component", "button", "card", "modal", "color", "colour",
 		"layout", "padding", "margin", "design", "style", "css", "tailwind",
 		"icon", "page", "screen", "form", "input", "tab", "sidebar", "menu",
 		"copy", "wording", "label") {
@@ -132,14 +138,15 @@ func inferCategories(prompt string) []string {
 	}
 
 	// Decision / why signals
-	if containsAny(p, "why", "rationale", "decided", "choose", "chose", "tradeoff", "trade-off",
-		"prefer", "compared to", "vs ", "instead of") {
+	if hasWord(words, "why", "rationale", "decided", "choose", "chose", "tradeoff", "prefer", "vs") ||
+		containsAny(p, "trade-off", "compared to", "instead of") {
 		cats["decision"] = true
 	}
 
 	// Gotcha / debug / change-existing signals
-	if containsAny(p, "bug", "broken", "error", "fix", "crash", "race", "deadlock",
-		"slow", "timeout", "fails", "doesn't work", "doesnt work", "regression") {
+	if hasWord(words, "bug", "broken", "error", "fix", "crash", "race", "deadlock",
+		"slow", "timeout", "fails", "regression") ||
+		containsAny(p, "doesn't work", "doesnt work") {
 		cats["gotcha"] = true
 		cats["decision"] = true
 	}
@@ -168,11 +175,47 @@ func inferCategories(prompt string) []string {
 }
 
 // containsAny reports whether p contains any of the needles. Substring
-// match — needles should include surrounding spaces if word-boundaries
-// matter (e.g. "vs " not "vs", to avoid matching "lvs" in URLs).
+// match — use when needles are multi-word phrases or include trailing
+// spaces / punctuation. For short single-token keywords prefer hasWord.
 func containsAny(p string, needles ...string) bool {
 	for _, n := range needles {
 		if strings.Contains(p, n) {
+			return true
+		}
+	}
+	return false
+}
+
+// tokeniseWords splits a prompt into lowercase word tokens, stripping
+// punctuation. Used by hasWord so "ui" doesn't match inside "suite".
+func tokeniseWords(p string) map[string]struct{} {
+	out := make(map[string]struct{}, 8)
+	var b strings.Builder
+	flush := func() {
+		if b.Len() == 0 {
+			return
+		}
+		out[b.String()] = struct{}{}
+		b.Reset()
+	}
+	for _, r := range p {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-':
+			b.WriteRune(r)
+		default:
+			flush()
+		}
+	}
+	flush()
+	return out
+}
+
+// hasWord reports whether any of the candidates appears as a whole word
+// token in the pre-tokenised set. Stops "ui" matching "suite", "fix"
+// matching "prefix", etc.
+func hasWord(words map[string]struct{}, candidates ...string) bool {
+	for _, c := range candidates {
+		if _, ok := words[c]; ok {
 			return true
 		}
 	}

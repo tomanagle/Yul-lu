@@ -137,7 +137,7 @@ func TestSyncRoundTrip(t *testing.T) {
 	embedsBeforeB := embB.callCount()
 
 	// --- B reconciles. Same model, so should reuse A's embedding. ---
-	res, err := srvB.Reconcile(ctx)
+	res, err := srvB.Reconcile(ctx, "", "")
 	if err != nil {
 		t.Fatalf("B reconcile: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestSyncRoundTrip(t *testing.T) {
 	}
 
 	// --- Idempotency: re-running reconcile is a no-op. ---
-	res2, err := srvB.Reconcile(ctx)
+	res2, err := srvB.Reconcile(ctx, "", "")
 	if err != nil {
 		t.Fatalf("B reconcile #2: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestSyncRoundTrip(t *testing.T) {
 	}
 
 	embedsBeforeB = embB.callCount()
-	res3, err := srvB.Reconcile(ctx)
+	res3, err := srvB.Reconcile(ctx, "", "")
 	if err != nil {
 		t.Fatalf("B reconcile update: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestSyncRoundTrip(t *testing.T) {
 		t.Fatalf("A delete: %v", err)
 	}
 
-	res4, err := srvB.Reconcile(ctx)
+	res4, err := srvB.Reconcile(ctx, "", "")
 	if err != nil {
 		t.Fatalf("B reconcile delete: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestSyncCrossModelTriggersLocalEmbed(t *testing.T) {
 	_, memUUID := publishCreate(t, srvA, stA, projectID, "cross-model memory", []string{"x"})
 
 	embedsBeforeC := embC.callCount()
-	res, err := srvC.Reconcile(ctx)
+	res, err := srvC.Reconcile(ctx, "", "")
 	if err != nil {
 		t.Fatalf("C reconcile: %v", err)
 	}
