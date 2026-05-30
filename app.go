@@ -94,6 +94,9 @@ func (a *App) startup(ctx context.Context) {
 func (a *App) shutdown(_ context.Context) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.srv != nil {
+		a.srv.StopScheduler()
+	}
 	if a.store != nil {
 		_ = a.store.Close()
 		a.store = nil
@@ -154,10 +157,29 @@ func (a *App) openStoreLocked() {
 		"embedder_dim", dim,
 	)
 
+	// Stop the previous server's scheduler before replacing it —
+	// SaveConfig rebuilds the *Server, and without this stop call the
+	// old scheduler keeps polling against the same store, racing with
+	// the new one.
+	if a.srv != nil {
+		a.srv.StopScheduler()
+	}
+
 	reasoner, _ := ai.BuildReasoner(a.cfg, ai.NopRecorder())
 	a.srv = server.New(st, embedder, reasoner, a.cfg, a.logger)
 	// Inline what swapMCPHandler used to do — we already hold the lock.
 	a.mcpHandler = a.srv.MCPHandler()
+
+	// Start the background dream scheduler. Without this, no automatic
+	// dream passes ever fire — buffered messages just accumulate until
+	// someone clicks "Dream now" or an MCP client calls dream_now.
+	// Previously only the legacy `yullu stdio` path called this; the
+	// desktop HTTP server (the normal entry point) was missing it
+	// entirely, so per-project schedules never fired no matter how the
+	// user configured them.
+	if a.ctx != nil {
+		a.srv.StartScheduler(a.ctx)
+	}
 
 	if a.cfg.Sync.Enabled && a.cfg.Sync.AutoReconcileOnStartup {
 		// LogReconcile is a long-running call; drop the lock for it. The

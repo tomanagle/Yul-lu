@@ -448,7 +448,19 @@ func (s *Server) applyDreamOp(ctx context.Context, projectID string, op dreamOp,
 // Poll cadence comes from the global config — it bounds responsiveness
 // for new pending projects, not per-project firing. Per-project
 // interval/idle are read fresh inside scheduleTick.
+// StartScheduler spawns the dream loop. Safe to call multiple times —
+// each call cancels the prior goroutine before starting a new one, so a
+// SaveConfig-triggered rebuild doesn't accumulate phantom schedulers.
 func (s *Server) StartScheduler(ctx context.Context) {
+	// Cancel any existing scheduler before starting a fresh one.
+	s.schedulerMu.Lock()
+	if s.schedulerCancel != nil {
+		s.schedulerCancel()
+	}
+	derivedCtx, cancel := context.WithCancel(ctx)
+	s.schedulerCancel = cancel
+	s.schedulerMu.Unlock()
+
 	interval := s.cfg.Dreaming.IntervalDuration()
 	idle := time.Duration(s.cfg.Dreaming.OnIdleSeconds) * time.Second
 
@@ -469,7 +481,22 @@ func (s *Server) StartScheduler(ctx context.Context) {
 		"global_enabled", s.cfg.Dreaming.Enabled,
 		"poll", poll.String(),
 	)
-	go s.runScheduler(ctx, poll)
+	// Use the derived ctx so StopScheduler / a fresh StartScheduler
+	// (e.g. after SaveConfig builds a new Server and the old one
+	// re-cancels) can shut this goroutine down without waiting for
+	// the parent ctx to cancel.
+	go s.runScheduler(derivedCtx, poll)
+}
+
+// StopScheduler cancels the running scheduler goroutine. No-op if
+// StartScheduler was never called or has already been stopped.
+func (s *Server) StopScheduler() {
+	s.schedulerMu.Lock()
+	defer s.schedulerMu.Unlock()
+	if s.schedulerCancel != nil {
+		s.schedulerCancel()
+		s.schedulerCancel = nil
+	}
 }
 
 // runScheduler polls every project with buffered messages and delegates

@@ -250,6 +250,18 @@ func (s *Store) init(embedderID string) error {
 			rejected_at INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_rejected_project_at ON rejected_memories(project_id, rejected_at DESC)`,
+		// project_locations maps a project_id (origin URL) to the local
+		// git root the server has seen it at. Populated whenever a
+		// client call (record_messages, store_memory, retrieve_memories,
+		// dream_now, etc.) arrives with a cwd; consulted when writing
+		// memory-log events so .yullu/logs/ lands in the project's own
+		// repo instead of the yullu server's cwd. Single row per
+		// project — most recent (project_id, git_root) wins.
+		`CREATE TABLE IF NOT EXISTS project_locations (
+			project_id TEXT PRIMARY KEY,
+			git_root   TEXT NOT NULL,
+			last_seen  INTEGER NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS usage (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			at INTEGER NOT NULL,
@@ -786,6 +798,45 @@ func (s *Store) Get(ctx context.Context, id int64) (*Memory, error) {
 // Previously this only queried `memories`, which meant a freshly-recording
 // project (lots of buffered turns, no dreams yet) was invisible — the
 // sidebar dropdown was empty while the Dream buffer card showed messages.
+// UpsertProjectLocation records that projectID lives at gitRoot on this
+// machine. Called whenever a client request arrives with a cwd we can
+// resolve to a git root. The mapping is what lets the dreamer write
+// .yullu/logs/ entries into the project's own repo at dream time —
+// without it, all writes default to the yullu server's own cwd.
+// Empty inputs are no-ops so callers don't have to defensive-check.
+func (s *Store) UpsertProjectLocation(ctx context.Context, projectID, gitRoot string) error {
+	if projectID == "" || gitRoot == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO project_locations(project_id, git_root, last_seen)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(project_id) DO UPDATE SET
+			git_root = excluded.git_root,
+			last_seen = excluded.last_seen`,
+		projectID, gitRoot, time.Now().Unix())
+	return err
+}
+
+// ProjectGitRoot returns the local git root last seen for projectID, or
+// "" + nil if no mapping exists yet (a brand-new project that hasn't
+// received a request from the client tools yet). Callers should treat
+// "" as "fall back to server cwd" rather than as an error — the legacy
+// single-project mode works fine without the registry.
+func (s *Store) ProjectGitRoot(ctx context.Context, projectID string) (string, error) {
+	if projectID == "" {
+		return "", nil
+	}
+	var root string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT git_root FROM project_locations WHERE project_id = ?`,
+		projectID).Scan(&root)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return root, err
+}
+
 func (s *Store) ListProjects(ctx context.Context) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT project_id FROM memories

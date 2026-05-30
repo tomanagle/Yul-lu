@@ -138,8 +138,9 @@ func (s *Server) Reconcile(ctx context.Context) (*ReconcileResult, error) {
 	if err != nil {
 		return res, fmt.Errorf("list locals: %w", err)
 	}
+	writer := s.writerForProject(ctx, projectID)
 	for _, m := range locals {
-		if knownCreates[m.UUID] || s.writer == nil {
+		if knownCreates[m.UUID] || writer == nil {
 			continue
 		}
 		// If sync logs embeddings and we have a local vector, ship it
@@ -155,7 +156,7 @@ func (s *Server) Reconcile(ctx context.Context) (*ReconcileResult, error) {
 			}
 		}
 		event := memlog.NewRememberEvent(m.UUID, m.Content, m.Tags, vectors)
-		if err := s.writer.Write(event); err != nil {
+		if err := writer.Write(event); err != nil {
 			return res, fmt.Errorf("publish local-only memory %s: %w", m.UUID, err)
 		}
 		res.LocalOnlyLogged++
@@ -293,7 +294,7 @@ func (s *Server) applyState(ctx context.Context, projectID, memoryUUID string, s
 			}
 			vec = vecs[0]
 			res.EmbeddingsComputed++
-			s.publishOwnVector(memoryUUID, vec)
+			s.publishOwnVector(ctx, projectID, memoryUUID, vec)
 		}
 	} else if v, ok := st.vectorsByModel[ourEmbedderID]; ok {
 		// Content didn't change but a vector for our model arrived - refresh.
@@ -328,14 +329,22 @@ func (s *Server) applyState(ctx context.Context, projectID, memoryUUID string, s
 }
 
 // publishOwnVector writes a vector-only update event so teammates on the same
-// model can skip the embed call. No-op when logging is off or the writer is
-// unavailable.
-func (s *Server) publishOwnVector(memoryUUID string, vec []float32) {
-	if !s.cfg.Sync.LogEmbeddings || s.writer == nil {
+// model can skip the embed call. No-op when logging is off or no writer is
+// available for the project (sync disabled, no git root recorded, etc.).
+//
+// Scoped to projectID so the event lands in the project's own
+// .yullu/logs/, not the yullu server's cwd. See writerForProject for
+// the lookup logic.
+func (s *Server) publishOwnVector(ctx context.Context, projectID, memoryUUID string, vec []float32) {
+	if !s.cfg.Sync.LogEmbeddings {
+		return
+	}
+	writer := s.writerForProject(ctx, projectID)
+	if writer == nil {
 		return
 	}
 	event := memlog.NewVectorEvent(memoryUUID, map[string][]float32{s.embedder.ID(): vec})
-	if err := s.writer.Write(event); err != nil {
+	if err := writer.Write(event); err != nil {
 		// Vector events are an optimization; failing to log one shouldn't
 		// abort the operation that produced it.
 		s.logger.Warn("write vector event failed", "uuid", memoryUUID, "err", err.Error())

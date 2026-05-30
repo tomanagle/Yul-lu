@@ -60,6 +60,14 @@ type Server struct {
 	// projectCfgMu guards the resolved-config cache.
 	projectCfgMu sync.RWMutex
 	projectCfg   map[string]config.Config
+	// schedulerCancel cancels the background dream scheduler started by
+	// StartScheduler. Held so a SaveConfig that builds a new Server can
+	// stop the previous instance's scheduler before launching a new
+	// one — without this, every SaveConfig leaks a goroutine that keeps
+	// polling and competing for the same store. Nil before the first
+	// StartScheduler call and after StopScheduler.
+	schedulerMu     sync.Mutex
+	schedulerCancel context.CancelFunc
 }
 
 // New constructs a Server with all tools registered. cfg is the global
@@ -257,26 +265,105 @@ func (s *Server) registerTools() {
 // the user was working.
 func (s *Server) resolveProjectID(override, callerCwd string) (string, error) {
 	if override != "" {
+		// Override skips cwd → we still try to record a mapping if cwd
+		// happened to come along too. Helps the next call from this
+		// project that doesn't pass project_id (e.g. dream pass).
+		s.maybeRememberProjectLocation(override, callerCwd)
 		return override, nil
 	}
 	if callerCwd != "" {
-		return scope.Resolve(callerCwd)
+		projectID, err := scope.Resolve(callerCwd)
+		if err != nil {
+			return "", err
+		}
+		s.maybeRememberProjectLocation(projectID, callerCwd)
+		return projectID, nil
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", err
 	}
-	return scope.Resolve(cwd)
+	projectID, err := scope.Resolve(cwd)
+	if err != nil {
+		return "", err
+	}
+	s.maybeRememberProjectLocation(projectID, cwd)
+	return projectID, nil
 }
 
-// logEvent writes e to the event log if logging is enabled. Logging errors
-// surface to the caller - for write paths, "event then apply" means a failed
-// log write should abort the operation so the local DB doesn't drift.
+// maybeRememberProjectLocation upserts the (projectID, git_root) pair
+// into the store so the dreamer + reconcile can write to the project's
+// own .yullu/logs/ instead of the server's cwd. Best-effort: errors
+// are logged but don't fail the request. Empty inputs are no-ops.
+func (s *Server) maybeRememberProjectLocation(projectID, cwd string) {
+	if projectID == "" || cwd == "" {
+		return
+	}
+	gitRoot := scope.GitRoot(cwd)
+	if gitRoot == "" {
+		return
+	}
+	if err := s.store.UpsertProjectLocation(context.Background(), projectID, gitRoot); err != nil {
+		s.logger.Warn("upsert project location", "project_id", projectID, "git_root", gitRoot, "err", err.Error())
+	}
+}
+
+// logEvent writes e to the event log if logging is enabled. Project-
+// agnostic — used by paths that don't know which project the event
+// belongs to. Prefer logEventFor when you have a project_id; it ensures
+// the .yullu/logs/ entry lands in the project's own repo instead of the
+// server's cwd.
 func (s *Server) logEvent(e memlog.Event) error {
 	if s.writer == nil {
 		return nil
 	}
 	return s.writer.Write(e)
+}
+
+// logEventFor writes e to the .yullu/logs/ directory of the project
+// it belongs to. Looks up the project's git root in the registry; if
+// found, uses a project-scoped writer. If not found (project hasn't
+// been seen with a cwd yet), falls back to the boot-time writer so the
+// legacy single-project case keeps working.
+//
+// Why this exists: the boot-time s.writer is bound to whatever cwd
+// yullu was launched from. Without per-project lookup, every project's
+// memory events land in the yullu server's repo instead of the
+// project's own repo — wrong place for sync, terrible for teammates.
+func (s *Server) logEventFor(ctx context.Context, projectID string, e memlog.Event) error {
+	w := s.writerForProject(ctx, projectID)
+	if w == nil {
+		return nil
+	}
+	return w.Write(e)
+}
+
+// writerForProject returns a memlog.Writer scoped to projectID's local
+// git root, or the server's boot-time writer as a fallback. Returns nil
+// when sync is globally disabled and there's no fallback either.
+func (s *Server) writerForProject(ctx context.Context, projectID string) *memlog.Writer {
+	if projectID == "" {
+		return s.writer
+	}
+	// Per-project sync config — a project that disabled sync overrides
+	// the global default. If sync is off for this project we don't
+	// write anywhere.
+	syncCfg := s.resolveProject(projectID).Sync
+	if !syncCfg.Enabled {
+		return nil
+	}
+	root, err := s.store.ProjectGitRoot(ctx, projectID)
+	if err != nil {
+		s.logger.Warn("lookup project git root", "project_id", projectID, "err", err.Error())
+		return s.writer
+	}
+	if root == "" {
+		// Unknown project — fall back so single-project setups still
+		// work. A multi-project user will trigger the registry as soon
+		// as any cwd-bearing call arrives.
+		return s.writer
+	}
+	return memlog.NewWriter(root, syncCfg.Dir)
 }
 
 // ownVectors returns a single-entry vectors map for our embedder ID, or nil
@@ -331,7 +418,7 @@ func (s *Server) createMemory(ctx context.Context, projectID, content string, ta
 	}
 	memUUID := uuid.NewString()
 	event := memlog.NewRememberEvent(memUUID, content, tags, s.ownVectors(vecs[0]))
-	if err := s.logEvent(event); err != nil {
+	if err := s.logEventFor(ctx, projectID, event); err != nil {
 		return "", 0, fmt.Errorf("log create event: %w", err)
 	}
 	id, err := s.store.Insert(ctx, memUUID, projectID, content, tags, vecs[0], category)
@@ -360,7 +447,7 @@ func (s *Server) updateMemoryByUUID(ctx context.Context, memUUID string, content
 		newVec = vecs[0]
 	}
 	event := memlog.NewReviseEvent(memUUID, contentPtr, tagsPtr, s.ownVectors(newVec))
-	if err := s.logEvent(event); err != nil {
+	if err := s.logEventFor(ctx, existing.ProjectID, event); err != nil {
 		return nil, fmt.Errorf("log update event: %w", err)
 	}
 	if err := s.store.Update(ctx, existing.ID, contentPtr, tagsPtr, newVec); err != nil {
@@ -378,7 +465,7 @@ func (s *Server) deleteMemoryByUUID(ctx context.Context, memUUID string) error {
 	if existing == nil {
 		return fmt.Errorf("memory %s not found", memUUID)
 	}
-	if err := s.logEvent(memlog.NewForgetEvent(memUUID)); err != nil {
+	if err := s.logEventFor(ctx, existing.ProjectID, memlog.NewForgetEvent(memUUID)); err != nil {
 		return fmt.Errorf("log delete event: %w", err)
 	}
 	return s.store.Delete(ctx, existing.ID)
