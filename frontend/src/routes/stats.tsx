@@ -63,9 +63,16 @@ export function StatsPage() {
   const usageSummaryQuery = useUsageSummary(days * 24);
   const graphQuery = useMemoryGraph(project);
   const graphDecorated = useDecoratedGraph(graphQuery.data);
-  // Dreaming activity: live buffer + persisted history over the range.
+  // Dreaming activity: live buffer + persisted history over the range,
+  // plus the per-cycle table.
+  //
+  // IMPORTANT: every hook must run on every render. Don't move queries
+  // below the `!status.ready` early return — when status flips from
+  // loading to ready, the hook count changes and React throws
+  // "Rendered more hooks than during the previous render."
   const sessionQuery = useSessionStats(project);
   const dreamStatsQuery = useDreamStats(project, days);
+  const dreamPassesQuery = useDreamPasses(project);
 
   if (!status?.ready) {
     return (
@@ -76,7 +83,6 @@ export function StatsPage() {
   }
 
   const stats = statsQuery.data;
-  const dreamPassesQuery = useDreamPasses(project);
 
   return (
     <div className="space-y-6">
