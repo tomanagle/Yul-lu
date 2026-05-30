@@ -61,8 +61,7 @@ export const qk = {
   memoryGraph: (projectID: string) => ["memory-graph", projectID] as const,
   dreamStats: (projectID: string, days: number) => ["dream-stats", projectID, days] as const,
   projectOverrides: (projectID: string) => ["project-overrides", projectID] as const,
-  bufferedSessions: (projectID: string) =>
-    ["buffered-sessions", projectID] as const,
+  bufferedSessions: (projectID: string) => ["buffered-sessions", projectID] as const,
   dreamPrompt: ["dream-prompt"] as const,
   dreamProgress: ["dream-progress"] as const,
   dreamPasses: (projectID: string) => ["dream-passes", projectID] as const,

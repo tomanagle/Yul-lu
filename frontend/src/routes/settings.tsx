@@ -217,13 +217,13 @@ function GlobalSettings() {
             Cursor) makes the LLM call against its own subscription. No API key needed, but{" "}
             <em>dreaming only runs when the assistant calls it</em>: the background scheduler and
             the "Dream now" button can't sample because they have no client session. The shipped
-            skill prompts the assistant to call <code>dream_now</code> as the buffer fills, so
-            this mode works fine for day-to-day use.
+            skill prompts the assistant to call <code>dream_now</code> as the buffer fills, so this
+            mode works fine for day-to-day use.
             <br />
             <br />
             <strong>Direct provider</strong> — set Anthropic or OpenAI with an API key. Enables
-            background dreaming on a timer AND the "Dream now" button. yullu bills against your
-            API key, not your subscription.
+            background dreaming on a timer AND the "Dream now" button. yullu bills against your API
+            key, not your subscription.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -437,14 +437,14 @@ function ProjectSettings({ projectID }: ProjectSettingsProps) {
   // stable. The generic-typed inner arrow needs the trailing comma in
   // TSX (`<K,>`) to disambiguate from JSX.
   const repoSet = useCallback(
-    <K extends keyof ProjectOverridePayload,>(k: K, v: ProjectOverridePayload[K] | undefined) => {
+    <K extends keyof ProjectOverridePayload>(k: K, v: ProjectOverridePayload[K] | undefined) => {
       setRepo((prev) => (prev === null ? prev : { ...prev, [k]: v }));
       setDirty(true);
     },
     [],
   );
   const userSet = useCallback(
-    <K extends keyof ProjectOverridePayload,>(k: K, v: ProjectOverridePayload[K] | undefined) => {
+    <K extends keyof ProjectOverridePayload>(k: K, v: ProjectOverridePayload[K] | undefined) => {
       setUser((prev) => (prev === null ? prev : { ...prev, [k]: v }));
       setDirty(true);
     },

@@ -465,9 +465,8 @@ function DreamPassesCard({ passes }: { passes: import("@/lib/schemas").DreamPass
       <CardHeader>
         <CardTitle className="text-base">Dream cycles</CardTitle>
         <CardDescription>
-          The {passes.length || "last few"} most recent passes. Skipped =
-          ops the reasoner emitted that didn't apply (missing UUID, empty
-          content, etc.).
+          The {passes.length || "last few"} most recent passes. Skipped = ops the reasoner emitted
+          that didn't apply (missing UUID, empty content, etc.).
         </CardDescription>
       </CardHeader>
       <CardContent>

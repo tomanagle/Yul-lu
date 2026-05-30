@@ -72,9 +72,9 @@ function NextPassCard() {
         <CardHeader>
           <CardTitle className="text-base">Next dream pass</CardTitle>
           <CardDescription>
-            Scheduler is off — dreams only fire when you click "Dream now" or
-            an MCP client calls <code className="text-[11px]">dream_now</code>.
-            Turn it back on under Settings → Dreaming.
+            Scheduler is off — dreams only fire when you click "Dream now" or an MCP client calls{" "}
+            <code className="text-[11px]">dream_now</code>. Turn it back on under Settings →
+            Dreaming.
           </CardDescription>
         </CardHeader>
       </Card>
@@ -89,10 +89,8 @@ function NextPassCard() {
           {data.next_at ? (
             <>
               Fires{" "}
-              <span className="font-medium text-foreground">
-                {relativeFuture(data.next_at)}
-              </span>{" "}
-              ({data.next_reason === "idle" ? "idle trigger" : "interval"}).
+              <span className="font-medium text-foreground">{relativeFuture(data.next_at)}</span> (
+              {data.next_reason === "idle" ? "idle trigger" : "interval"}).
             </>
           ) : (
             "Waiting for activity — no trigger is currently armed."
@@ -123,10 +121,7 @@ function NextPassCard() {
           }
         />
         {data.last_scheduled_at && (
-          <ScheduleRow
-            label="Last scheduled pass"
-            detail={relativeTime(data.last_scheduled_at)}
-          />
+          <ScheduleRow label="Last scheduled pass" detail={relativeTime(data.last_scheduled_at)} />
         )}
       </CardContent>
     </Card>
@@ -185,11 +180,7 @@ function DreamProgressCard() {
   const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
 
   return (
-    <Card
-      className={cn(
-        data.running && "border-primary/50 bg-primary/5",
-      )}
-    >
+    <Card className={cn(data.running && "border-primary/50 bg-primary/5")}>
       <CardHeader>
         <CardTitle className="flex items-center gap-2">
           <Sparkles
@@ -206,22 +197,27 @@ function DreamProgressCard() {
           )}
         </CardTitle>
         <CardDescription>
-          {data.running
-            ? data.current_session_id
-              ? <>Processing session <span className="font-mono">{shortUUID(data.current_session_id)}</span> ({done + 1}/{total || "?"})</>
-              : "Enumerating sessions…"
-            : data.finished_at
-              ? <>Finished {relativeTime(data.finished_at)}</>
-              : "Idle"}
+          {data.running ? (
+            data.current_session_id ? (
+              <>
+                Processing session{" "}
+                <span className="font-mono">{shortUUID(data.current_session_id)}</span> ({done + 1}/
+                {total || "?"})
+              </>
+            ) : (
+              "Enumerating sessions…"
+            )
+          ) : data.finished_at ? (
+            <>Finished {relativeTime(data.finished_at)}</>
+          ) : (
+            "Idle"
+          )}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         {data.running && total > 0 && (
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-            <div
-              className="h-full bg-primary transition-all"
-              style={{ width: `${pct}%` }}
-            />
+            <div className="h-full bg-primary transition-all" style={{ width: `${pct}%` }} />
           </div>
         )}
         <div className="flex items-baseline gap-6">
@@ -308,22 +304,21 @@ function SamplingOnlyNotice({ messages }: { messages: number }) {
   return (
     <div className="space-y-2 rounded-md border border-violet/30 bg-violet/5 p-3">
       <p className="text-sm leading-relaxed">
-        <span className="font-semibold text-violet-soft">MCP sampling mode.</span> Dreams use
-        your AI client's subscription, so the desktop "Dream now" button is disabled — there's
-        no client session in this request to sample against.
+        <span className="font-semibold text-violet-soft">MCP sampling mode.</span> Dreams use your
+        AI client's subscription, so the desktop "Dream now" button is disabled — there's no client
+        session in this request to sample against.
       </p>
       <p className="text-xs text-muted-foreground">
         {messages > 0 ? (
           <>
-            Your assistant will call <code>dream_now</code> automatically as the buffer fills
-            (the shipped skill instructs it to fire at ≥ 20 messages or after ~30 minutes).
-            Keep working — memories will appear once the assistant triggers a pass.
+            Your assistant will call <code>dream_now</code> automatically as the buffer fills (the
+            shipped skill instructs it to fire at ≥ 20 messages or after ~30 minutes). Keep working
+            — memories will appear once the assistant triggers a pass.
           </>
         ) : (
           <>
-            Once your assistant records some turns via <code>record_messages</code>, it will
-            call <code>dream_now</code> automatically to extract memories. No action needed
-            here.
+            Once your assistant records some turns via <code>record_messages</code>, it will call{" "}
+            <code>dream_now</code> automatically to extract memories. No action needed here.
           </>
         )}
       </p>
@@ -522,19 +517,17 @@ function BufferedSessionsCard({ project }: BufferedSessionsCardProps) {
       <CardHeader>
         <CardTitle>Buffered sessions</CardTitle>
         <CardDescription>
-          Conversation turns waiting for the next dream pass. Click a session to expand.
-          Each session is processed independently; pending messages are
-          deleted after the dreamer applies its memory ops.
+          Conversation turns waiting for the next dream pass. Click a session to expand. Each
+          session is processed independently; pending messages are deleted after the dreamer applies
+          its memory ops.
         </CardDescription>
       </CardHeader>
       <CardContent>
-        {isLoading && (
-          <p className="text-xs text-muted-foreground">Loading…</p>
-        )}
+        {isLoading && <p className="text-xs text-muted-foreground">Loading…</p>}
         {!isLoading && sessions.length === 0 && (
           <p className="text-xs text-muted-foreground">
-            Buffer is empty. Memories are extracted from messages your MCP client
-            pushes via <code>record_messages</code> (or the Claude Code Stop hook).
+            Buffer is empty. Memories are extracted from messages your MCP client pushes via{" "}
+            <code>record_messages</code> (or the Claude Code Stop hook).
           </p>
         )}
         {sessions.length > 0 && (
@@ -598,9 +591,7 @@ function SessionRow({ session }: SessionRowProps) {
               >
                 {m.role}
               </span>
-              <p className="whitespace-pre-wrap leading-relaxed text-foreground/90">
-                {m.content}
-              </p>
+              <p className="whitespace-pre-wrap leading-relaxed text-foreground/90">{m.content}</p>
             </li>
           ))}
         </ol>
@@ -647,14 +638,15 @@ function DreamPromptCard() {
         <CardTitle className="flex items-center gap-2">
           Dream prompt
           {data.is_custom && (
-            <Badge variant="secondary" className="text-[10px]">customised</Badge>
+            <Badge variant="secondary" className="text-[10px]">
+              customised
+            </Badge>
           )}
         </CardTitle>
         <CardDescription>
-          The system message the reasoner sees on every dream pass. Edit the rules
-          for what counts as "worth remembering" — the strict-JSON output contract
-          below is appended automatically and isn't editable (removing it would
-          break dream-response parsing).
+          The system message the reasoner sees on every dream pass. Edit the rules for what counts
+          as "worth remembering" — the strict-JSON output contract below is appended automatically
+          and isn't editable (removing it would break dream-response parsing).
           {data.path && (
             <span className="ml-1 block font-mono text-[11px] opacity-70">
               stored at {data.path}
@@ -708,11 +700,7 @@ function DreamPromptCard() {
             onClick={() => save.mutate(draft)}
             disabled={save.isPending || !dirty}
           >
-            {save.isPending
-              ? "Saving…"
-              : matchesDefault
-                ? "Save (reverts to default)"
-                : "Save"}
+            {save.isPending ? "Saving…" : matchesDefault ? "Save (reverts to default)" : "Save"}
           </Button>
         </div>
       </CardContent>

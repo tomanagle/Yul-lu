@@ -46,7 +46,9 @@ export function MemoriesPage() {
   const [filter, setFilter] = useState("");
   // null = "All" — show every category sectioned. A specific category
   // collapses the view to that one section.
-  const [activeCategory, setActiveCategory] = useState<MemoryCategory | "uncategorised" | null>(null);
+  const [activeCategory, setActiveCategory] = useState<MemoryCategory | "uncategorised" | null>(
+    null,
+  );
 
   // The backend handles search via SQLite FTS5 (BM25-ranked, free).
   // Passing a non-empty filter switches useMemories from List to Search.
@@ -83,11 +85,7 @@ export function MemoriesPage() {
         onRefresh={() => memoriesQuery.refetch()}
       />
 
-      <CategoryFilterPills
-        active={activeCategory}
-        onChange={setActiveCategory}
-        counts={grouped}
-      />
+      <CategoryFilterPills active={activeCategory} onChange={setActiveCategory} counts={grouped} />
 
       <div className="flex items-center justify-between text-xs text-muted-foreground">
         <span>
@@ -127,17 +125,16 @@ export function MemoriesPage() {
       <div className="space-y-6">
         {visibleSections.map((category) => (
           <section key={category} className="space-y-3">
-            <CategorySectionHeader
-              category={category}
-              count={grouped[category]?.length ?? 0}
-            />
+            <CategorySectionHeader category={category} count={grouped[category]?.length ?? 0} />
             <ul className="space-y-3">
               {grouped[category]!.map((m) => (
                 <li key={m.id}>
                   <MemoryCard
                     memory={m}
                     isSaving={updateMemory.isPending && updateMemory.variables?.id === m.id}
-                    onSave={(content, tags) => updateMemory.mutateAsync({ id: m.id, content, tags })}
+                    onSave={(content, tags) =>
+                      updateMemory.mutateAsync({ id: m.id, content, tags })
+                    }
                     onDelete={() => {
                       if (confirm("Delete this memory?")) deleteMemory.mutate(m.id);
                     }}

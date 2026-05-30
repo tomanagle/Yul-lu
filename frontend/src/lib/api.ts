@@ -200,8 +200,7 @@ export const GetBufferedSessions = (projectID: string) => {
   return requestList(BufferedSessionsListSchema, `/api/sessions?${params}`);
 };
 
-export const GetDreamPrompt = () =>
-  request(DreamPromptViewSchema, "/api/dream/prompt");
+export const GetDreamPrompt = () => request(DreamPromptViewSchema, "/api/dream/prompt");
 
 export const SaveDreamPrompt = (prompt: string) =>
   request(DreamPromptViewSchema, "/api/dream/prompt", {
@@ -209,8 +208,7 @@ export const SaveDreamPrompt = (prompt: string) =>
     body: JSON.stringify({ prompt }),
   });
 
-export const GetDreamProgress = () =>
-  request(DreamProgressSchema, "/api/dream/progress");
+export const GetDreamProgress = () => request(DreamProgressSchema, "/api/dream/progress");
 
 export const GetDreamPasses = (projectID: string, limit = 30) => {
   const params = new URLSearchParams();

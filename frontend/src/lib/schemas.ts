@@ -119,11 +119,11 @@ export type DreamPass = z.infer<typeof DreamPassSchema>;
 // "not yet classified" — surfaces in the Review queue for the user to
 // triage.
 export const MemoryCategorySchema = z.enum([
-  "process",  // how to do things in this repo
+  "process", // how to do things in this repo
   "decision", // why we made the choices we made
-  "gotcha",   // what bites
-  "domain",   // what words mean here
-  "style",    // what the project looks and feels like
+  "gotcha", // what bites
+  "domain", // what words mean here
+  "style", // what the project looks and feels like
 ]);
 export type MemoryCategory = z.infer<typeof MemoryCategorySchema>;
 
@@ -331,7 +331,7 @@ export const DreamProgressSchema = z.object({
   // "starting" before sessions enumerated; "session" while one is being
   // reasoned about; "idle" between/after passes.
   phase: z.string().optional(),
-  started_at: z.string().optional(),  // RFC3339, absent when never run
+  started_at: z.string().optional(), // RFC3339, absent when never run
   finished_at: z.string().optional(), // RFC3339, absent until first pass ends
   total_sessions: z.number(),
   completed_sessions: z.number(),

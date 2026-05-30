@@ -38,17 +38,14 @@ export function ReviewPage() {
         <CardHeader>
           <CardTitle>Review queue</CardTitle>
           <CardDescription>
-            Rate memories on a 1–10 scale. 1–5 archives them as anti-examples
-            for the next dream pass (the comment is the "why"). 6–10 keeps
-            them with the rating attached. Rated memories drop out of this
-            list; only un-rated ones surface here.
+            Rate memories on a 1–10 scale. 1–5 archives them as anti-examples for the next dream
+            pass (the comment is the "why"). 6–10 keeps them with the rating attached. Rated
+            memories drop out of this list; only un-rated ones surface here.
           </CardDescription>
         </CardHeader>
       </Card>
 
-      {isLoading && (
-        <p className="text-sm text-muted-foreground">Loading…</p>
-      )}
+      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
       {!isLoading && (!data || data.length === 0) && (
         <Card>
           <CardContent className="py-8 text-center text-sm text-muted-foreground">
@@ -83,9 +80,7 @@ function ReviewRow({ memory, project }: ReviewRowProps) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-sm font-mono leading-relaxed">
-          {memory.content}
-        </CardTitle>
+        <CardTitle className="text-sm font-mono leading-relaxed">{memory.content}</CardTitle>
         <CardDescription className="flex flex-wrap items-center gap-2">
           <span>created {relativeTime(memory.created_at)}</span>
           {memory.tags?.length ? (
