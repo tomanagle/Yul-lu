@@ -1,0 +1,10 @@
+{
+    // Recommended extensions for this repo. VS Code prompts to install these
+    // on first open (Extensions: Show Recommended Extensions).
+    //
+    // oxc = the Oxc toolchain extension: oxlint (linting) + oxfmt
+    // (formatting), matching the `lint`/`fmt` scripts in frontend/package.json.
+    "recommendations": [
+        "oxc.oxc-vscode"
+    ]
+}

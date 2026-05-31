@@ -51,7 +51,7 @@ export function ProjectScopeProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  // Surface "" to consumers while we're still null — keeps the existing
+  // Surface "" to consumers while we're still null - keeps the existing
   // contract (project: string) and the backend's "" = all-projects
   // convention. Once the effect lands, the real value replaces it.
   return <Ctx.Provider value={{ project: project ?? "", setProject }}>{children}</Ctx.Provider>;

@@ -163,7 +163,7 @@ export function UsageByModelChart({ data }: { data: UsageBucket[] }) {
     }));
 
   if (chartData.length === 0) {
-    return <p className="py-8 text-center text-sm text-muted-foreground">No usage yet.</p>;
+    return <p className="py-8 text-center  text-muted-foreground">No usage yet.</p>;
   }
 
   return (

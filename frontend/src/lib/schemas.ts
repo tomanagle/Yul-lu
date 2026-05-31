@@ -1,13 +1,13 @@
 // Zod schemas for every API response shape. Parsing through these on each
 // fetch catches drift between the Go server and the React client at the
-// boundary — a typo in a struct tag or a renamed field surfaces as a thrown
+// boundary - a typo in a struct tag or a renamed field surfaces as a thrown
 // ZodError instead of a silent `undefined` deep inside a chart.
 //
 // Type inference: every schema exports its TS type via `z.infer`, so
 // downstream code imports the type and never needs to hand-write a matching
 // interface. When the schema changes, the type updates automatically.
 //
-// Convention: ISO datetime strings stay typed as `z.string()` — the
+// Convention: ISO datetime strings stay typed as `z.string()` - the
 // existing format/relativeTime helpers parse them lazily on render, and
 // coercing to Date here would force every consumer to re-stringify or eat
 // a deserialisation cost they don't need.
@@ -119,7 +119,7 @@ export type DreamPass = z.infer<typeof DreamPassSchema>;
 
 // MemoryCategory is the content-shape axis the agent uses at retrieval
 // time. Mirrors the Go-side store.MemoryCategory enum. Empty means
-// "not yet classified" — surfaces in the Review queue for the user to
+// "not yet classified" - surfaces in the Review queue for the user to
 // triage.
 export const MemoryCategorySchema = z.enum([
   "process", // how to do things in this repo
@@ -355,7 +355,7 @@ export const BufferedSessionsListSchema = listOf(BufferedSessionSchema);
 
 // Live snapshot of the in-flight dream pass (or the last finished pass when
 // nothing's running). Polled by the dashboard with a short refetch interval
-// — handler is a cheap in-memory read, so 1–2s is safe.
+// - handler is a cheap in-memory read, so 1–2s is safe.
 export const DreamProgressSchema = z.object({
   running: z.boolean(),
   project_id: z.string().optional(),
@@ -373,7 +373,7 @@ export const DreamProgressSchema = z.object({
   ops_deleted: z.number(),
   ops_skipped: z.number(),
   last_error: z.string().optional(),
-  // Scheduler-derived fields — let the dreaming card show "next pass in
+  // Scheduler-derived fields - let the dreaming card show "next pass in
   // N min" countdowns without polling a second endpoint. scheduler_enabled
   // = false means the *_at fields stay empty and the UI shows "manual only".
   scheduler_enabled: z.boolean(),

@@ -67,7 +67,7 @@ export function StatsPage() {
   // plus the per-cycle table.
   //
   // IMPORTANT: every hook must run on every render. Don't move queries
-  // below the `!status.ready` early return — when status flips from
+  // below the `!status.ready` early return - when status flips from
   // loading to ready, the hook count changes and React throws
   // "Rendered more hooks than during the previous render."
   const sessionQuery = useSessionStats(project);
@@ -76,7 +76,7 @@ export function StatsPage() {
 
   if (!status?.ready) {
     return (
-      <p className="text-sm text-muted-foreground">
+      <p className=" text-muted-foreground">
         Finish setup on the Memories page before viewing stats.
       </p>
     );
@@ -87,13 +87,13 @@ export function StatsPage() {
   return (
     <div className="space-y-6">
       {/* Range picker, right-aligned. Project picker is in the sidebar.
-          Removed the Refresh button — every query auto-refetches on an
+          Removed the Refresh button - every query auto-refetches on an
           interval, so manual refresh was redundant. */}
       <div className="flex items-center justify-end gap-3">
         <RangeSelect value={days} onChange={setDays} />
       </div>
 
-      {!stats && <p className="text-sm text-muted-foreground">Loading…</p>}
+      {!stats && <p className=" text-muted-foreground">Loading…</p>}
 
       {stats && (
         <>
@@ -138,11 +138,6 @@ export function StatsPage() {
             stats={dreamStatsQuery.data}
           />
 
-          {/* Per-cycle history - the last N dream passes. Surfaces which
-              passes were noisy (lots of skipped ops, errors) vs which
-              actually produced memories. */}
-          <DreamPassesCard passes={dreamPassesQuery.data ?? []} />
-
           {/* 2-up charts row */}
           <div className="grid gap-4 lg:grid-cols-2">
             <Card>
@@ -181,7 +176,7 @@ export function StatsPage() {
                     (violet). Larger node = more recalls.
                   </CardDescription>
                 </div>
-                <span className="shrink-0 text-xs text-muted-foreground">
+                <span className="shrink-0  text-muted-foreground">
                   {graphDecorated.nodes.length} memories · {graphDecorated.links.length} edges
                 </span>
               </div>
@@ -222,6 +217,11 @@ export function StatsPage() {
               </CardContent>
             </Card>
           </div>
+
+          {/* Per-cycle history - the last N dream passes. Surfaces which
+          dream cycles were noisy (lots of skipped ops, errors) vs which
+          actually produced memories. */}
+          <DreamPassesCard passes={dreamPassesQuery.data ?? []} />
         </>
       )}
     </div>
@@ -283,7 +283,7 @@ function TopRecalled({
 }) {
   if (rows.length === 0) {
     return (
-      <p className="py-4 text-sm text-muted-foreground">
+      <p className="py-4  text-muted-foreground">
         No recalls yet. Memories appear here once retrieve_memories starts surfacing them.
       </p>
     );
@@ -295,11 +295,11 @@ function TopRecalled({
           key={row.memory.id}
           className="group flex items-start gap-3 rounded-md border border-border/40 bg-muted/30 p-3 transition-colors hover:border-accent/40 hover:bg-muted/50"
         >
-          <div className="yullu-tabular w-6 shrink-0 pt-0.5 text-center text-xs text-muted-foreground">
+          <div className="yullu-tabular w-6 shrink-0 pt-0.5 text-center  text-muted-foreground">
             {i + 1}
           </div>
           <div className="min-w-0 flex-1 space-y-1">
-            <p className="line-clamp-2 text-sm leading-relaxed">{row.memory.content}</p>
+            <p className="line-clamp-2  leading-relaxed">{row.memory.content}</p>
             {(row.memory.tags ?? []).length > 0 && (
               <div className="flex flex-wrap gap-1">
                 {row.memory.tags!.slice(0, 3).map((t) => (
@@ -360,7 +360,7 @@ function DreamingCard({
               Live buffer of recorded messages + dream-pass activity over the last {range}.
             </CardDescription>
           </div>
-          <span className="shrink-0 text-xs text-muted-foreground">last pass: {lastPass}</span>
+          <span className="shrink-0  text-muted-foreground">last pass: {lastPass}</span>
         </div>
       </CardHeader>
       <CardContent>
@@ -378,13 +378,13 @@ function DreamingCard({
           <Stat label="Deleted" value={stats?.ops_deleted ?? 0} />
         </div>
         {(stats?.errors ?? 0) > 0 && (
-          <p className="mt-3 text-xs text-destructive">
+          <p className="mt-3  text-destructive">
             {stats?.errors} error{stats?.errors === 1 ? "" : "s"} during recent passes. Check the
             dreaming page for details.
           </p>
         )}
         {(buffer?.messages ?? 0) > 0 && (stats?.passes ?? 0) === 0 && (
-          <p className="mt-3 text-xs text-muted-foreground">
+          <p className="mt-3  text-muted-foreground">
             Messages are buffered but no dream pass has run in this window. Configure a direct
             reasoner in Settings or hit “Dream now” on the Dreaming page.
           </p>
@@ -440,7 +440,7 @@ function RangeSelect({ value, onChange }: { value: number; onChange: (v: number)
             aria-checked={active}
             onClick={() => onChange(r.days)}
             className={cn(
-              "rounded px-2.5 py-1 text-xs font-medium transition-colors duration-150",
+              "rounded px-2.5 py-1  font-medium transition-colors duration-150",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               active
                 ? "bg-primary/15 text-foreground shadow-[inset_0_0_0_1px_hsl(244_76%_51%/0.35)]"
@@ -460,6 +460,13 @@ function RangeSelect({ value, onChange }: { value: number; onChange: (v: number)
 // breakdown. Errors get a small badge so they're easy to spot without
 // having to expand anything. Empty state covers brand-new installs.
 function DreamPassesCard({ passes }: { passes: import("@/lib/schemas").DreamPass[] }) {
+  const totalOpsCreated = passes.reduce((acc, p) => acc + p.ops_created, 0);
+  const totalOpsUpdated = passes.reduce((acc, p) => acc + p.ops_updated, 0);
+  const totalOpsDeleted = passes.reduce((acc, p) => acc + p.ops_deleted, 0);
+  const totalOpsSkipped = passes.reduce((acc, p) => acc + p.ops_skipped, 0);
+  const totalErrors = passes.reduce((acc, p) => acc + (p.errors?.length ?? 0), 0);
+  const totalSessionsProcessed = passes.reduce((acc, p) => acc + p.sessions_processed, 0);
+  const totalMessagesProcessed = passes.reduce((acc, p) => acc + p.messages_processed, 0);
   return (
     <Card>
       <CardHeader>
@@ -471,22 +478,36 @@ function DreamPassesCard({ passes }: { passes: import("@/lib/schemas").DreamPass
       </CardHeader>
       <CardContent>
         {passes.length === 0 ? (
-          <p className="text-xs text-muted-foreground">
-            No dream passes recorded yet for this scope.
-          </p>
+          <p className=" text-muted-foreground">No dream passes recorded yet for this scope.</p>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-xs">
+            <table className="w-full ">
               <thead className="text-muted-foreground">
                 <tr className="border-b border-border/40 text-left">
                   <th className="py-1.5 pr-3 font-medium">When</th>
-                  <th className="py-1.5 pr-3 font-medium">Sessions</th>
-                  <th className="py-1.5 pr-3 font-medium">Messages</th>
-                  <th className="py-1.5 pr-3 font-medium text-emerald-400/80">+ Created</th>
-                  <th className="py-1.5 pr-3 font-medium text-sky-400/80">~ Updated</th>
-                  <th className="py-1.5 pr-3 font-medium text-rose-400/80">− Deleted</th>
-                  <th className="py-1.5 pr-3 font-medium">Skipped</th>
-                  <th className="py-1.5 font-medium">Errors</th>
+                  <th className="py-1.5 pr-3 font-medium">
+                    Sessions{" "}
+                    <span className="text-muted-foreground">({totalSessionsProcessed})</span>
+                  </th>
+                  <th className="py-1.5 pr-3 font-medium">
+                    Messages{" "}
+                    <span className="text-muted-foreground">({totalMessagesProcessed})</span>
+                  </th>
+                  <th className="py-1.5 pr-3 font-medium text-emerald-400/80">
+                    + Created <span className="text-muted-foreground">({totalOpsCreated})</span>
+                  </th>
+                  <th className="py-1.5 pr-3 font-medium text-sky-400/80">
+                    ~ Updated <span className="text-muted-foreground">({totalOpsUpdated})</span>
+                  </th>
+                  <th className="py-1.5 pr-3 font-medium text-rose-400/80">
+                    − Deleted <span className="text-muted-foreground">({totalOpsDeleted})</span>
+                  </th>
+                  <th className="py-1.5 pr-3 font-medium">
+                    Skipped <span className="text-muted-foreground">({totalOpsSkipped})</span>
+                  </th>
+                  <th className="py-1.5 font-medium">
+                    Errors <span className="text-muted-foreground">({totalErrors})</span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -507,7 +528,7 @@ function DreamPassesCard({ passes }: { passes: import("@/lib/schemas").DreamPass
                           {p.errors.length}
                         </Badge>
                       ) : (
-                        <span className="text-muted-foreground">—</span>
+                        <span className="text-muted-foreground">-</span>
                       )}
                     </td>
                   </tr>

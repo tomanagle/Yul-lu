@@ -33,7 +33,7 @@ import {
   type ProjectOverridePayload,
 } from "./schemas";
 
-// rawRequest is the unschema'd fetch — used by helpers below. Most
+// rawRequest is the unschema'd fetch - used by helpers below. Most
 // callers want `request` (validated) or `requestList` (validated + unwrapped).
 async function rawRequest(path: string, init?: RequestInit): Promise<unknown> {
   const res = await fetch(path, {
@@ -69,7 +69,7 @@ async function request<S extends z.ZodTypeAny>(
 
 // requestList unwraps the standard {items: [...]} envelope (see the
 // writeList helper on the Go side). The schema's item type carries through
-// to the return type — no extra generics needed at the call site.
+// to the return type - no extra generics needed at the call site.
 async function requestList<T>(
   listSchema: z.ZodType<{ items: T[] }>,
   path: string,

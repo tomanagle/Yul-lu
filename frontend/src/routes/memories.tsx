@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils";
 
 // Display order for the category sections. Matches the SKILL.md ordering
 // so users see categories laid out the same way the agent reasons about
-// them. "uncategorised" is a sentinel for memories with no category set —
+// them. "uncategorised" is a sentinel for memories with no category set -
 // rendered last so it doesn't compete with the named sections.
 const CATEGORY_ORDER: (MemoryCategory | "uncategorised")[] = [
   "process",
@@ -28,13 +28,13 @@ const CATEGORY_ORDER: (MemoryCategory | "uncategorised")[] = [
 
 // One-line definitions shown under each section header so a user
 // reviewing the dashboard learns the categories without leaving the
-// page. Kept short — full definitions live in SKILL.md.
+// page. Kept short - full definitions live in SKILL.md.
 const CATEGORY_BLURB: Record<MemoryCategory | "uncategorised", string> = {
-  process: "How to do things in this repo — commands, conventions, layout.",
+  process: "How to do things in this repo - commands, conventions, layout.",
   decision: "Why we made the choices we made.",
-  gotcha: "What bites — non-obvious constraints, API quirks, must-always rules.",
-  domain: "What words mean here — terms, invariants, semantics.",
-  style: "Visual language — UI patterns, copy tone, layout density.",
+  gotcha: "What bites - non-obvious constraints, API quirks, must-always rules.",
+  domain: "What words mean here - terms, invariants, semantics.",
+  style: "Visual language - UI patterns, copy tone, layout density.",
   uncategorised: "Memories awaiting classification. Rate or edit to assign a category.",
 };
 
@@ -44,7 +44,7 @@ export function MemoriesPage() {
   // Project is sidebar-owned. Empty = all projects.
   const { project } = useProjectScope();
   const [filter, setFilter] = useState("");
-  // null = "All" — show every category sectioned. A specific category
+  // null = "All" - show every category sectioned. A specific category
   // collapses the view to that one section.
   const [activeCategory, setActiveCategory] = useState<MemoryCategory | "uncategorised" | null>(
     null,
@@ -69,7 +69,7 @@ export function MemoriesPage() {
 
   const showingCount = results.length;
   // Sections to render. When a specific category is active, restrict
-  // to just that one (and only if it has entries — otherwise empty
+  // to just that one (and only if it has entries - otherwise empty
   // state below handles the message).
   const visibleSections = CATEGORY_ORDER.filter((c) => {
     if (activeCategory !== null && c !== activeCategory) return false;
@@ -87,7 +87,7 @@ export function MemoriesPage() {
 
       <CategoryFilterPills active={activeCategory} onChange={setActiveCategory} counts={grouped} />
 
-      <div className="flex items-center justify-between text-xs text-muted-foreground">
+      <div className="flex items-center justify-between  text-muted-foreground">
         <span>
           {filter
             ? `${showingCount} ${showingCount === 1 ? "match" : "matches"} for “${filter}”`
@@ -102,24 +102,18 @@ export function MemoriesPage() {
         </span>
       </div>
 
-      {memoriesQuery.isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+      {memoriesQuery.isLoading && <p className=" text-muted-foreground">Loading…</p>}
       {memoriesQuery.error && (
         <Card className="border-destructive/40 bg-destructive/10">
-          <CardContent className="p-4 text-sm text-destructive">
-            {String(memoriesQuery.error)}
-          </CardContent>
+          <CardContent className="p-4  text-destructive">{String(memoriesQuery.error)}</CardContent>
         </Card>
       )}
       {!memoriesQuery.isLoading && showingCount === 0 && !filter && <EmptyState />}
       {!memoriesQuery.isLoading && showingCount === 0 && filter && (
-        <p className="py-8 text-center text-sm text-muted-foreground">
-          No memories match “{filter}”.
-        </p>
+        <p className="py-8 text-center  text-muted-foreground">No memories match “{filter}”.</p>
       )}
       {!memoriesQuery.isLoading && showingCount > 0 && visibleSections.length === 0 && (
-        <p className="py-8 text-center text-sm text-muted-foreground">
-          No memories in this category.
-        </p>
+        <p className="py-8 text-center  text-muted-foreground">No memories in this category.</p>
       )}
 
       <div className="space-y-6">
@@ -212,7 +206,7 @@ function Pill({
       type="button"
       onClick={onClick}
       className={cn(
-        "rounded-full border px-3 py-1 text-xs transition-colors",
+        "rounded-full border px-3 py-1  transition-colors",
         active
           ? "border-primary bg-primary/10 text-foreground"
           : "border-border/40 text-muted-foreground hover:border-border hover:text-foreground",
@@ -232,8 +226,8 @@ function CategorySectionHeader({
 }) {
   return (
     <div className="flex items-baseline gap-2 border-b border-border/40 pb-1.5">
-      <h2 className="text-sm font-medium capitalize text-foreground">{category}</h2>
-      <span className="text-xs text-muted-foreground">{count}</span>
+      <h2 className=" font-medium capitalize text-foreground">{category}</h2>
+      <span className=" text-muted-foreground">{count}</span>
       <span className="ml-2 truncate text-[11px] text-muted-foreground/80">
         {CATEGORY_BLURB[category]}
       </span>
@@ -317,7 +311,7 @@ function MemoryCard({
     <Card className="group transition-colors hover:border-border/80">
       <CardContent className="space-y-3 p-4">
         <div className="flex items-start gap-3">
-          <p className="flex-1 whitespace-pre-wrap text-sm leading-relaxed">{memory.content}</p>
+          <p className="flex-1 whitespace-pre-wrap  leading-relaxed">{memory.content}</p>
           <div className="flex shrink-0 gap-1 opacity-0 transition-opacity group-hover:opacity-100">
             <Button
               size="icon"
@@ -434,7 +428,7 @@ function MemoryEditor({
         </div>
 
         {error && (
-          <p className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">{error}</p>
+          <p className="rounded-md bg-destructive/10 px-3 py-2  text-destructive">{error}</p>
         )}
 
         <div className="flex justify-end gap-2">
@@ -464,13 +458,11 @@ function SetupCard({
     <Card className="mx-auto max-w-xl">
       <CardContent className="space-y-3 p-6">
         <h2 className="text-lg font-semibold">Setup needed</h2>
-        <p className="text-sm">{status.message}</p>
+        <p className="">{status.message}</p>
         {status.hint && (
-          <p className="rounded-md bg-muted/50 px-3 py-2 text-sm text-muted-foreground">
-            {status.hint}
-          </p>
+          <p className="rounded-md bg-muted/50 px-3 py-2  text-muted-foreground">{status.hint}</p>
         )}
-        <p className="text-xs text-muted-foreground">
+        <p className=" text-muted-foreground">
           Config: <code className="rounded bg-muted px-1.5 py-0.5">{status.config_path}</code>
           <br />
           DB: <code className="rounded bg-muted px-1.5 py-0.5">{status.db_path}</code>
@@ -492,7 +484,7 @@ function EmptyState() {
     <Card className="border-dashed">
       <CardContent className="p-10 text-center">
         <h3 className="text-base font-semibold">No memories yet</h3>
-        <p className="mt-1 text-sm text-muted-foreground">
+        <p className="mt-1  text-muted-foreground">
           Memories appear here as your MCP client calls <code>store_memory</code>, or as the dreamer
           extracts them from recorded conversations.
         </p>

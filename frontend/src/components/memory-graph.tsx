@@ -132,17 +132,17 @@ export function MemoryGraphCanvas({
   return (
     <div ref={containerRef} className="relative h-full w-full">
       {error && (
-        <div className="absolute left-4 top-4 rounded-md bg-destructive/10 px-4 py-3 text-sm text-destructive">
+        <div className="absolute left-4 top-4 rounded-md bg-destructive/10 px-4 py-3  text-destructive">
           {error}
         </div>
       )}
       {!error && loading && (
-        <p className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-sm text-muted-foreground">
+        <p className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2  text-muted-foreground">
           Loading graph…
         </p>
       )}
       {!error && !loading && nodes.length === 0 && (
-        <p className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-sm text-muted-foreground">
+        <p className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2  text-muted-foreground">
           No memories to graph yet.
         </p>
       )}
@@ -194,7 +194,7 @@ export function MemoryGraphCanvas({
 function HoverCard({ node }: { node: DecoratedGraphNode }) {
   return (
     <div className="pointer-events-none absolute left-4 top-4 z-10 max-w-md rounded-md border border-border/40 bg-card/95 p-3 shadow-lg backdrop-blur">
-      <p className="text-sm leading-relaxed">{node.content}</p>
+      <p className=" leading-relaxed">{node.content}</p>
       {(node.tags ?? []).length > 0 && (
         <div className="mt-2 flex flex-wrap gap-1.5">
           {node.tags!.map((t) => (

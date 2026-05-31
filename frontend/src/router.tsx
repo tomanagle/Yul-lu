@@ -43,7 +43,7 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 
-// Primary nav: data pages. Settings is split out below — it's secondary
+// Primary nav: data pages. Settings is split out below - it's secondary
 // (configuration), so it sits at the bottom of the sidebar with a divider.
 type NavEntry = { to: string; label: string; icon: LucideIcon };
 
@@ -67,7 +67,7 @@ const TITLES: Record<string, string> = Object.fromEntries(
   [...PRIMARY_NAV, SETTINGS_NAV].map((n) => [n.to, n.label]),
 );
 
-// Sentinel for "all projects" — Radix Select can't bind to an empty value.
+// Sentinel for "all projects" - Radix Select can't bind to an empty value.
 const ALL_PROJECTS = "__all__";
 
 const COLLAPSE_KEY = "yullu.sidebar.collapsed";
@@ -86,17 +86,17 @@ function RootLayout() {
 
   return (
     <ProjectScopeProvider>
-      <div className="flex h-full bg-background text-foreground">
+      <div className="flex h-full overflow-hidden bg-background text-foreground">
         <Sidebar collapsed={collapsed} />
 
-        {/* Floating collapse tab — sits on the seam between the sidebar and
+        {/* Floating collapse tab - sits on the seam between the sidebar and
             the main content, anchored vertically near the top so it's easy
             to grab. Flips its chevron based on state. */}
         <CollapseHandle collapsed={collapsed} onToggle={() => setCollapsed((v) => !v)} />
 
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <TopBar />
-          <main className="flex-1 overflow-auto p-6">
+          <main className="min-h-0 flex-1 overflow-auto p-6">
             <Outlet />
           </main>
         </div>
@@ -124,7 +124,7 @@ function Sidebar({ collapsed }: { collapsed: boolean }) {
         ))}
       </nav>
 
-      {/* Secondary nav — Settings sits at the bottom with a divider. The
+      {/* Secondary nav - Settings sits at the bottom with a divider. The
           collapse button used to live here; it's a floating handle now. */}
       <div className="border-t border-border/40 px-2 py-2">
         <NavItem entry={SETTINGS_NAV} collapsed={collapsed} />
@@ -155,14 +155,12 @@ function SidebarBrand({ collapsed }: { collapsed: boolean }) {
         <span className="absolute inset-0 rounded-full bg-gradient-to-br from-indigo-soft/40 via-violet/30 to-transparent" />
         <Brain className="relative h-3.5 w-3.5 text-violet-soft" />
       </span>
-      {!collapsed && (
-        <span className="text-sm font-semibold tracking-tight text-foreground">Yul'lu</span>
-      )}
+      {!collapsed && <span className=" font-semibold tracking-tight text-foreground">Yul'lu</span>}
     </Link>
   );
 }
 
-// ProjectPicker is hidden when the sidebar is collapsed — there's no
+// ProjectPicker is hidden when the sidebar is collapsed - there's no
 // sensible 14px-wide UI for "choose between two long URL-like strings". The
 // user can expand the sidebar to switch projects; the currently-selected
 // project stays in context regardless.
@@ -184,7 +182,7 @@ function ProjectPicker({ collapsed }: { collapsed: boolean }) {
         value={project || ALL_PROJECTS}
         onValueChange={(v) => setProject(v === ALL_PROJECTS ? "" : v)}
       >
-        <SelectTrigger className="h-8 w-full border-border/40 bg-background/40 text-xs">
+        <SelectTrigger className="h-8 w-full border-border/40 bg-background/40 ">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -206,7 +204,7 @@ function NavItem({ entry, collapsed }: { entry: NavEntry; collapsed: boolean }) 
       to={entry.to}
       title={collapsed ? entry.label : undefined}
       className={cn(
-        "group relative flex items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground",
+        "group relative flex items-center gap-3 rounded-md px-3 py-2  text-muted-foreground",
         "transition-all duration-200 ease-out",
         "hover:bg-primary/10 hover:text-foreground",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-0",
@@ -239,7 +237,7 @@ function CollapseHandle({ collapsed, onToggle }: { collapsed: boolean; onToggle:
         "text-muted-foreground transition-all duration-200 ease-out",
         "hover:border-accent/40 hover:bg-card hover:text-foreground hover:shadow-[0_0_18px_-4px_hsl(263_84%_58%/0.6)]",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        // Slide with the sidebar — pinned to its right edge.
+        // Slide with the sidebar - pinned to its right edge.
         collapsed ? "left-14" : "left-60",
       )}
       style={{ transitionProperty: "left, color, background-color, border-color, box-shadow" }}
@@ -258,7 +256,7 @@ function TopBar() {
   const title = TITLES[location.pathname] ?? "Yul'lu";
   return (
     <header className="flex h-12 items-center border-b border-border/40 bg-card/40 px-6 backdrop-blur-sm">
-      <span className="text-sm font-semibold tracking-tight text-foreground">{title}</span>
+      <span className=" font-semibold tracking-tight text-foreground">{title}</span>
     </header>
   );
 }

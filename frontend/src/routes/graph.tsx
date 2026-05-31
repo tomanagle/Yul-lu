@@ -23,7 +23,7 @@ export function GraphPage() {
 
   if (status && !status.ready) {
     return (
-      <p className="text-sm text-muted-foreground">
+      <p className=" text-muted-foreground">
         Finish setup on the Memories page before viewing the graph.
       </p>
     );
@@ -35,13 +35,13 @@ export function GraphPage() {
         <CardContent className="flex flex-wrap items-center gap-4 p-3">
           <div className="flex flex-1 items-center gap-2">
             <Switch checked={showTagEdges} onCheckedChange={setShowTagEdges} id="tag-edges" />
-            <Label htmlFor="tag-edges" className="cursor-pointer text-sm">
+            <Label htmlFor="tag-edges" className="cursor-pointer ">
               Tag edges
             </Label>
           </div>
           <div className="flex items-center gap-2">
             <Switch checked={showSimEdges} onCheckedChange={setShowSimEdges} id="sim-edges" />
-            <Label htmlFor="sim-edges" className="cursor-pointer text-sm">
+            <Label htmlFor="sim-edges" className="cursor-pointer ">
               Similarity edges
             </Label>
           </div>
@@ -78,7 +78,7 @@ export function GraphPage() {
 
 function Legend({ nodeCount, edgeCount }: { nodeCount: number; edgeCount: number }) {
   return (
-    <div className="flex items-center gap-4 text-xs text-muted-foreground">
+    <div className="flex items-center gap-4  text-muted-foreground">
       <span>
         {nodeCount} {nodeCount === 1 ? "memory" : "memories"} · {edgeCount}{" "}
         {edgeCount === 1 ? "edge" : "edges"}

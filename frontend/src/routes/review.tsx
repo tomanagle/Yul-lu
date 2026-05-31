@@ -1,7 +1,7 @@
 // Dedicated Review queue. Lists memories the user hasn't rated yet
 // (newest first). Each card gets a 1–10 score row + comment textarea.
 //
-// Scoring rules — codified server-side in store.RateMemory, mirrored here
+// Scoring rules - codified server-side in store.RateMemory, mirrored here
 // in the UI affordance:
 //   - 1–5  → reject. Memory is removed from `memories` and archived
 //            into rejected_memories. The next dream pass sees it as an
@@ -12,7 +12,7 @@
 // We render the threshold visually: 1–5 buttons in destructive red,
 // 6–10 in primary violet, so the user understands what their click does
 // before they make it. The Save button is disabled until a rating is
-// chosen — the comment is optional for 6–10 but strongly encouraged for
+// chosen - the comment is optional for 6–10 but strongly encouraged for
 // 1–5 (we don't enforce; let the user be terse if they want).
 
 import { useState } from "react";
@@ -45,11 +45,11 @@ export function ReviewPage() {
         </CardHeader>
       </Card>
 
-      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+      {isLoading && <p className=" text-muted-foreground">Loading…</p>}
       {!isLoading && (!data || data.length === 0) && (
         <Card>
-          <CardContent className="py-8 text-center text-sm text-muted-foreground">
-            Nothing to review — every memory in this project has been rated.
+          <CardContent className="py-8 text-center  text-muted-foreground">
+            Nothing to review - every memory in this project has been rated.
           </CardContent>
         </Card>
       )}
@@ -80,7 +80,7 @@ function ReviewRow({ memory, project }: ReviewRowProps) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-sm font-mono leading-relaxed">{memory.content}</CardTitle>
+        <CardTitle className=" font-mono leading-relaxed">{memory.content}</CardTitle>
         <CardDescription className="flex flex-wrap items-center gap-2">
           <span>created {relativeTime(memory.created_at)}</span>
           {memory.tags?.length ? (
@@ -128,11 +128,11 @@ function ReviewRow({ memory, project }: ReviewRowProps) {
           value={comment}
           onChange={(e) => setComment(e.target.value)}
           rows={2}
-          className="text-xs"
+          className=""
         />
 
         {rate.error && (
-          <p className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <p className="rounded-md bg-destructive/10 px-3 py-2  text-destructive">
             {String(rate.error)}
           </p>
         )}
@@ -142,8 +142,8 @@ function ReviewRow({ memory, project }: ReviewRowProps) {
             {rating === null
               ? "Pick a score 1–10."
               : willReject
-                ? `Score ${rating}/10 — this will archive the memory as an anti-example.`
-                : `Score ${rating}/10 — keep with rating attached.`}
+                ? `Score ${rating}/10 - this will archive the memory as an anti-example.`
+                : `Score ${rating}/10 - keep with rating attached.`}
           </span>
           <Button
             type="button"
@@ -172,7 +172,7 @@ function RatingButton({ value, selected, tone, onClick }: RatingButtonProps) {
       type="button"
       onClick={onClick}
       className={cn(
-        "h-7 w-7 rounded-md border text-xs font-medium transition-colors",
+        "h-7 w-7 rounded-md border  font-medium transition-colors",
         tone === "reject"
           ? selected
             ? "border-destructive bg-destructive text-destructive-foreground"

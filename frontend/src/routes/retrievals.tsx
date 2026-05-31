@@ -1,10 +1,10 @@
-// Retrievals review surface. Lists recent recalls (newest first) — every
+// Retrievals review surface. Lists recent recalls (newest first) - every
 // time a memory was returned by a vector search, with the query that pulled
 // it, how close the match was (similarity + rank), and a thumbs up/down to
 // record whether that retrieval was actually relevant.
 //
 // This rates the *retrieval*, not the memory: "was returning THIS memory for
-// THIS query a good match?" — a different question from the 1–10 quality
+// THIS query a good match?" - a different question from the 1–10 quality
 // score on the Review page. A memory can be great but mis-retrieved, or a
 // weak memory can be a perfect match. The verdict is keyed to the recall
 // event, so the same memory can be judged good for one query and bad for
@@ -34,7 +34,7 @@ export function RetrievalsPage() {
         <CardHeader>
           <CardTitle>Retrievals</CardTitle>
           <CardDescription>
-            Every recent recall — the memory that surfaced, the query that pulled it, and how close
+            Every recent recall - the memory that surfaced, the query that pulled it, and how close
             the match was. Mark each as a good or bad match. This judges the <em>retrieval</em>, not
             the memory's quality (that's the Review page): the same memory can be a great match for
             one query and noise for another. Verdicts stay local and help tune the match-score
@@ -45,16 +45,16 @@ export function RetrievalsPage() {
 
       {!project && (
         <Card>
-          <CardContent className="py-8 text-center text-sm text-muted-foreground">
+          <CardContent className="py-8 text-center  text-muted-foreground">
             Pick a project in the sidebar to see its retrievals.
           </CardContent>
         </Card>
       )}
 
-      {project && isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+      {project && isLoading && <p className=" text-muted-foreground">Loading…</p>}
       {project && !isLoading && (!data || data.length === 0) && (
         <Card>
-          <CardContent className="py-8 text-center text-sm text-muted-foreground">
+          <CardContent className="py-8 text-center  text-muted-foreground">
             No retrievals yet. Memories show up here once they're returned by a search.
           </CardContent>
         </Card>
@@ -84,7 +84,7 @@ function RetrievalRow({ event, project }: RetrievalRowProps) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-sm font-mono leading-relaxed">
+        <CardTitle className=" font-mono leading-relaxed">
           {deleted ? (
             <span className="italic text-muted-foreground">(memory has since been deleted)</span>
           ) : (
@@ -119,11 +119,11 @@ function RetrievalRow({ event, project }: RetrievalRowProps) {
           value={comment}
           onChange={(e) => setComment(e.target.value)}
           rows={2}
-          className="text-xs"
+          className=""
         />
 
         {rate.error && (
-          <p className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <p className="rounded-md bg-destructive/10 px-3 py-2  text-destructive">
             {String(rate.error)}
           </p>
         )}

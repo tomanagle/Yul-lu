@@ -60,6 +60,10 @@
     --glow-violet: 0 0 0 1px hsl(263 84% 58% / 0.4), 0 0 24px -4px hsl(263 84% 58% / 0.35);
   }
 
+  html {
+    font-size: 16px;
+  }
+
   html,
   body,
   #root {

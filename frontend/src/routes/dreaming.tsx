@@ -30,9 +30,7 @@ export function DreamingPage() {
 
   if (!status?.ready) {
     return (
-      <p className="text-sm text-muted-foreground">
-        Finish setup on the Memories page before dreaming.
-      </p>
+      <p className=" text-muted-foreground">Finish setup on the Memories page before dreaming.</p>
     );
   }
 
@@ -49,14 +47,14 @@ export function DreamingPage() {
 }
 
 // NextPassCard renders the scheduler's countdown to the next natural
-// dream firing. Two triggers — interval (lastScheduledAt + interval) and
-// idle (lastMessageAt + onIdleSeconds) — whichever fires first becomes
+// dream firing. Two triggers - interval (lastScheduledAt + interval) and
+// idle (lastMessageAt + onIdleSeconds) - whichever fires first becomes
 // the headline. When scheduler_enabled is false the card explains that
 // dreams only happen manually.
 function NextPassCard() {
   const { data } = useDreamProgress();
   // Re-render every second so the relative-time string ticks down. We
-  // don't refetch — the times come from the existing /progress poll —
+  // don't refetch - the times come from the existing /progress poll -
   // just nudge React to reformat against `now`.
   const [, force] = useState(0);
   useEffect(() => {
@@ -72,7 +70,7 @@ function NextPassCard() {
         <CardHeader>
           <CardTitle className="text-base">Next dream pass</CardTitle>
           <CardDescription>
-            Scheduler is off — dreams only fire when you click "Dream now" or an MCP client calls{" "}
+            Scheduler is off - dreams only fire when you click "Dream now" or an MCP client calls{" "}
             <code className="text-[11px]">dream_now</code>. Turn it back on under Settings →
             Dreaming.
           </CardDescription>
@@ -93,11 +91,11 @@ function NextPassCard() {
               {data.next_reason === "idle" ? "idle trigger" : "interval"}).
             </>
           ) : (
-            "Waiting for activity — no trigger is currently armed."
+            "Waiting for activity - no trigger is currently armed."
           )}
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-1.5 text-xs text-muted-foreground">
+      <CardContent className="space-y-1.5  text-muted-foreground">
         <ScheduleRow
           label={`Every ${formatSeconds(data.interval_seconds)}`}
           detail={
@@ -139,7 +137,7 @@ function ScheduleRow({ label, detail }: { label: string; detail: string }) {
 
 // relativeFuture is "in 2m" / "in 30s" / "any moment" for a future-or-past
 // timestamp. The progress endpoint can return a next_at that's already
-// elapsed if the scheduler hasn't ticked yet — show "any moment now"
+// elapsed if the scheduler hasn't ticked yet - show "any moment now"
 // instead of negative deltas.
 function relativeFuture(iso: string): string {
   const ms = new Date(iso).getTime() - Date.now();
@@ -164,18 +162,18 @@ function formatSeconds(s: number): string {
 // DreamProgressCard renders /api/dream/progress: a "Dreaming…" banner with
 // the live counters while a pass runs, and a quiet "last pass finished N
 // ago" summary when idle. Polls fast while running (1s) and slow when not
-// (5s) — see useDreamProgress.
+// (5s) - see useDreamProgress.
 function DreamProgressCard() {
   const { data } = useDreamProgress();
   if (!data) return null;
-  // Hide the card entirely until the first pass has ever run — no point
+  // Hide the card entirely until the first pass has ever run - no point
   // showing "idle since never" on a brand-new install.
   if (!data.running && !data.started_at) return null;
 
   const total = data.total_sessions;
   const done = data.completed_sessions;
   // Progress bar fills as completed/total. When total=0 (pass started but
-  // no sessions found) show an empty bar — the pass will finish moments
+  // no sessions found) show an empty bar - the pass will finish moments
   // later and the card flips to idle.
   const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0;
 
@@ -228,7 +226,7 @@ function DreamProgressCard() {
           <Stat label="Deleted" value={data.ops_deleted} />
         </div>
         {data.last_error && (
-          <p className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <p className="rounded-md bg-destructive/10 px-3 py-2  text-destructive">
             {data.last_error}
           </p>
         )}
@@ -246,7 +244,7 @@ function BufferCard({ project }: { project: string }) {
   const messages = stats.data?.messages ?? 0;
   // Sampling-only mode: no direct reasoner configured. The desktop
   // button can't trigger a dream (no MCP client session in this
-  // request context) — surface a notice instead of a broken button.
+  // request context) - surface a notice instead of a broken button.
   const samplingOnly = !status?.reasoner;
 
   return (
@@ -277,14 +275,14 @@ function BufferCard({ project }: { project: string }) {
             </Button>
 
             {messages === 0 && (
-              <p className="text-xs text-muted-foreground">
+              <p className=" text-muted-foreground">
                 Nothing to dream about yet. Memories are extracted from messages your MCP client
                 pushes via <code>record_messages</code>.
               </p>
             )}
 
             {dream.error && (
-              <p className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+              <p className="rounded-md bg-destructive/10 px-3 py-2  text-destructive">
                 {String(dream.error)}
               </p>
             )}
@@ -303,17 +301,17 @@ function BufferCard({ project }: { project: string }) {
 function SamplingOnlyNotice({ messages }: { messages: number }) {
   return (
     <div className="space-y-2 rounded-md border border-violet/30 bg-violet/5 p-3">
-      <p className="text-sm leading-relaxed">
+      <p className=" leading-relaxed">
         <span className="font-semibold text-violet-soft">MCP sampling mode.</span> Dreams use your
-        AI client's subscription, so the desktop "Dream now" button is disabled — there's no client
+        AI client's subscription, so the desktop "Dream now" button is disabled - there's no client
         session in this request to sample against.
       </p>
-      <p className="text-xs text-muted-foreground">
+      <p className=" text-muted-foreground">
         {messages > 0 ? (
           <>
             Your assistant will call <code>dream_now</code> automatically as the buffer fills (the
             shipped skill instructs it to fire at ≥ 20 messages or after ~30 minutes). Keep working
-            — memories will appear once the assistant triggers a pass.
+            - memories will appear once the assistant triggers a pass.
           </>
         ) : (
           <>
@@ -322,7 +320,7 @@ function SamplingOnlyNotice({ messages }: { messages: number }) {
           </>
         )}
       </p>
-      <p className="text-xs text-muted-foreground">
+      <p className=" text-muted-foreground">
         To enable the button + background dreaming, set a direct reasoner in{" "}
         <strong>Settings → Reasoning</strong> (Anthropic or OpenAI with an API key).
       </p>
@@ -334,7 +332,7 @@ function Stat({ label, value }: { label: string; value: number }) {
   return (
     <div>
       <div className="text-3xl font-semibold tabular-nums">{value}</div>
-      <div className="text-xs uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className=" uppercase tracking-wide text-muted-foreground">{label}</div>
     </div>
   );
 }
@@ -342,7 +340,7 @@ function Stat({ label, value }: { label: string; value: number }) {
 function DreamResultPanel({ result }: { result: DreamResult }) {
   if (result.skipped) {
     return (
-      <p className="text-xs text-muted-foreground">
+      <p className=" text-muted-foreground">
         Another dream pass is in flight - try again in a moment.
       </p>
     );
@@ -350,7 +348,7 @@ function DreamResultPanel({ result }: { result: DreamResult }) {
   const errors: string[] = result.errors ?? [];
   return (
     <div className="space-y-2 rounded-md border bg-muted/30 p-3">
-      <div className="flex flex-wrap items-center gap-2 text-xs">
+      <div className="flex flex-wrap items-center gap-2 ">
         <span className="font-medium">Last result</span>
         <Badge variant="secondary">{result.sessions_processed ?? 0} sessions</Badge>
         <Badge variant="secondary">+{result.ops_created ?? 0} created</Badge>
@@ -361,7 +359,7 @@ function DreamResultPanel({ result }: { result: DreamResult }) {
         )}
       </div>
       {errors.length > 0 && (
-        <ul className="space-y-1 text-xs text-destructive">
+        <ul className="space-y-1  text-destructive">
           {errors.map((e: string, i: number) => (
             <li key={i}>{e}</li>
           ))}
@@ -465,7 +463,7 @@ function ScheduleCard() {
           </Field>
 
           {save.error && (
-            <p className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            <p className="rounded-md bg-destructive/10 px-3 py-2  text-destructive">
               {String(save.error)}
             </p>
           )}
@@ -494,7 +492,7 @@ function Field({
     <div className="space-y-1.5">
       <Label>{label}</Label>
       {children}
-      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+      {hint && <p className=" text-muted-foreground">{hint}</p>}
     </div>
   );
 }
@@ -523,9 +521,9 @@ function BufferedSessionsCard({ project }: BufferedSessionsCardProps) {
         </CardDescription>
       </CardHeader>
       <CardContent>
-        {isLoading && <p className="text-xs text-muted-foreground">Loading…</p>}
+        {isLoading && <p className=" text-muted-foreground">Loading…</p>}
         {!isLoading && sessions.length === 0 && (
-          <p className="text-xs text-muted-foreground">
+          <p className=" text-muted-foreground">
             Buffer is empty. Memories are extracted from messages your MCP client pushes via{" "}
             <code>record_messages</code> (or the Claude Code Stop hook).
           </p>
@@ -564,7 +562,7 @@ function SessionRow({ session }: SessionRowProps) {
           ) : (
             <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           )}
-          <span className="font-mono text-xs text-foreground truncate">
+          <span className="font-mono  text-foreground truncate">
             {shortUUID(session.session_id)}
           </span>
           <Badge variant="secondary" className="shrink-0 text-[10px]">
@@ -580,7 +578,7 @@ function SessionRow({ session }: SessionRowProps) {
       {open && (
         <ol className="space-y-2 border-t border-border/40 px-3 py-3">
           {session.messages.map((m, i) => (
-            <li key={i} className="flex gap-3 text-xs">
+            <li key={i} className="flex gap-3 ">
               <span
                 className={cn(
                   "shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] uppercase",
@@ -623,7 +621,7 @@ function DreamPromptCard() {
           <CardTitle>Dream prompt</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-xs text-muted-foreground">Loading…</p>
+          <p className=" text-muted-foreground">Loading…</p>
         </CardContent>
       </Card>
     );
@@ -645,7 +643,7 @@ function DreamPromptCard() {
         </CardTitle>
         <CardDescription>
           The system message the reasoner sees on every dream pass. Edit the rules for what counts
-          as "worth remembering" — the strict-JSON output contract below is appended automatically
+          as "worth remembering" - the strict-JSON output contract below is appended automatically
           and isn't editable (removing it would break dream-response parsing).
           {data.path && (
             <span className="ml-1 block font-mono text-[11px] opacity-70">
@@ -660,7 +658,7 @@ function DreamPromptCard() {
           onChange={(e) => setDraft(e.target.value)}
           rows={16}
           spellCheck={false}
-          className="font-mono text-xs leading-relaxed"
+          className="font-mono  leading-relaxed"
         />
 
         <div className="space-y-1.5">
@@ -673,7 +671,7 @@ function DreamPromptCard() {
         </div>
 
         {save.error && (
-          <p className="rounded-md bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          <p className="rounded-md bg-destructive/10 px-3 py-2  text-destructive">
             {String(save.error)}
           </p>
         )}

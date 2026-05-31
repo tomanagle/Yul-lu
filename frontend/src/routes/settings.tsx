@@ -100,7 +100,7 @@ export function SettingsPage() {
       {tab === "global" && <GlobalSettings />}
       {tab === "project" && project && <ProjectSettings projectID={project} />}
       {tab === "project" && !project && (
-        <p className="text-sm text-muted-foreground">
+        <p className=" text-muted-foreground">
           Pick a project in the sidebar to edit its overrides.
         </p>
       )}
@@ -124,7 +124,7 @@ function TabButton({ active, onClick, children, disabled, title }: TabButtonProp
       disabled={disabled}
       title={title}
       className={cn(
-        "flex items-center rounded px-3 py-1 text-xs font-medium transition-colors duration-150",
+        "flex items-center rounded px-3 py-1  font-medium transition-colors duration-150",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         active
           ? "bg-primary/15 text-foreground shadow-[inset_0_0_0_1px_hsl(244_76%_51%/0.35)]"
@@ -142,7 +142,7 @@ function GlobalSettings() {
   const [cfg, setCfg] = useState<ConfigView | null>(null);
   // Tracks whether the user has touched the form since the last server
   // sync. Prevents `useEffect` below from clobbering an in-progress edit
-  // with a freshly-refetched server snapshot — but DOES adopt the new
+  // with a freshly-refetched server snapshot - but DOES adopt the new
   // snapshot once the user is clean (e.g. after a successful save the
   // mutation invalidates, the query refetches, and we should display
   // the persisted values verbatim).
@@ -161,7 +161,7 @@ function GlobalSettings() {
     if (!cfg || !dirty) setCfg(initial);
   }, [initial, cfg, dirty]);
 
-  if (!cfg) return <p className="text-sm text-muted-foreground">Loading…</p>;
+  if (!cfg) return <p className=" text-muted-foreground">Loading…</p>;
 
   const update = (patch: Partial<ConfigView>) => {
     setCfg({ ...cfg, ...patch });
@@ -213,7 +213,7 @@ function GlobalSettings() {
             Powers dreaming. Two modes:
             <br />
             <br />
-            <strong>MCP sampling</strong> (blank, default) — your AI client (Claude Code, Codex,
+            <strong>MCP sampling</strong> (blank, default) - your AI client (Claude Code, Codex,
             Cursor) makes the LLM call against its own subscription. No API key needed, but{" "}
             <em>dreaming only runs when the assistant calls it</em>: the background scheduler and
             the "Dream now" button can't sample because they have no client session. The shipped
@@ -221,7 +221,7 @@ function GlobalSettings() {
             mode works fine for day-to-day use.
             <br />
             <br />
-            <strong>Direct provider</strong> — set Anthropic or OpenAI with an API key. Enables
+            <strong>Direct provider</strong> - set Anthropic or OpenAI with an API key. Enables
             background dreaming on a timer AND the "Dream now" button. yullu bills against your API
             key, not your subscription.
           </CardDescription>
@@ -302,7 +302,7 @@ function GlobalSettings() {
             checked={cfg.sync_enabled}
             onChange={(v) => update({ sync_enabled: v })}
           />
-          <p className="text-xs text-muted-foreground">
+          <p className=" text-muted-foreground">
             Dreaming controls live on the Dreaming page - manual trigger, schedule, and the toggle.
           </p>
         </CardContent>
@@ -313,7 +313,7 @@ function GlobalSettings() {
           <CardTitle>Retrieval</CardTitle>
           <CardDescription>
             Filter weak matches out of memory search. The minimum match score is a cosine-similarity
-            floor — a memory must score at least this high against the query to be returned. 0%
+            floor - a memory must score at least this high against the query to be returned. 0%
             disables the floor (always return the top matches). Higher is stricter: an unrelated
             prompt then pulls nothing instead of padding the results with noise.
           </CardDescription>
@@ -338,7 +338,7 @@ function GlobalSettings() {
 
       {save.error && (
         <Card className="border-destructive/40 bg-destructive/10">
-          <CardContent className="p-3 text-sm text-destructive">{String(save.error)}</CardContent>
+          <CardContent className="p-3  text-destructive">{String(save.error)}</CardContent>
         </Card>
       )}
 
@@ -366,7 +366,7 @@ function ModelSelect({
 }) {
   if (disabled || models.length === 0) {
     return (
-      <p className="text-xs italic text-muted-foreground">
+      <p className=" italic text-muted-foreground">
         {disabledHint ?? "No models available for this provider."}
       </p>
     );
@@ -403,7 +403,7 @@ function Field({
     <div className="space-y-1.5">
       <Label>{label}</Label>
       {children}
-      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+      {hint && <p className=" text-muted-foreground">{hint}</p>}
     </div>
   );
 }
@@ -460,7 +460,7 @@ function ProjectSettings({ projectID }: ProjectSettingsProps) {
 
   const effective = overrides?.effective;
 
-  // useCallback is the right tool here — useMemo would also work but
+  // useCallback is the right tool here - useMemo would also work but
   // obscures intent. Empty deps because setRepo/setUser identity is
   // stable. The generic-typed inner arrow needs the trailing comma in
   // TSX (`<K,>`) to disambiguate from JSX.
@@ -480,7 +480,7 @@ function ProjectSettings({ projectID }: ProjectSettingsProps) {
   );
 
   if (isLoading || !overrides || !repo || !user || !effective) {
-    return <p className="text-sm text-muted-foreground">Loading…</p>;
+    return <p className=" text-muted-foreground">Loading…</p>;
   }
 
   return (
@@ -502,11 +502,9 @@ function ProjectSettings({ projectID }: ProjectSettingsProps) {
           <CardTitle>Team-shared (committed)</CardTitle>
           <CardDescription>
             Stored in{" "}
-            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
-              .yullu/config.toml
-            </code>{" "}
+            <code className="rounded bg-muted px-1 py-0.5 font-mono ">.yullu/config.toml</code>{" "}
             inside the repo. Anyone who clones the project picks these up automatically. API keys
-            can't go here — use the private section below for those.
+            can't go here - use the private section below for those.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -559,7 +557,7 @@ function ProjectSettings({ projectID }: ProjectSettingsProps) {
           <CardTitle>Private (this machine)</CardTitle>
           <CardDescription>
             Stored in{" "}
-            <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
+            <code className="rounded bg-muted px-1 py-0.5 font-mono ">
               ~/.config/yullu/projects/…
             </code>
             . Never committed. Use this for project-specific API keys (e.g. a work key for one repo,
@@ -596,7 +594,7 @@ function ProjectSettings({ projectID }: ProjectSettingsProps) {
 
       {(overrides.warnings?.length ?? 0) > 0 && (
         <Card className="border-amber-500/40 bg-amber-500/10">
-          <CardContent className="p-3 text-xs text-amber-300">
+          <CardContent className="p-3  text-amber-300">
             {overrides.warnings!.map((w, i) => (
               <div key={i}>{w}</div>
             ))}
@@ -606,7 +604,7 @@ function ProjectSettings({ projectID }: ProjectSettingsProps) {
 
       {save.error && (
         <Card className="border-destructive/40 bg-destructive/10">
-          <CardContent className="p-3 text-sm text-destructive">{String(save.error)}</CardContent>
+          <CardContent className="p-3  text-destructive">{String(save.error)}</CardContent>
         </Card>
       )}
 
@@ -645,7 +643,7 @@ function OverrideField({
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between gap-2">
-        <Label className="text-sm">{label}</Label>
+        <Label className="">{label}</Label>
         <div className="flex items-center gap-2">
           <Label className="cursor-pointer text-[11px] text-muted-foreground">Override</Label>
           <Switch
@@ -666,12 +664,12 @@ function OverrideField({
         disabled={!overridden}
         autoComplete="off"
       />
-      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+      {hint && <p className=" text-muted-foreground">{hint}</p>}
     </div>
   );
 }
 
-// OverrideToggle is a boolean override — switch + inherited badge.
+// OverrideToggle is a boolean override - switch + inherited badge.
 function OverrideToggle({
   label,
   inherited,
@@ -706,7 +704,7 @@ function OverrideToggle({
   );
 }
 
-// OverrideNumber is a numeric override field — same UX as OverrideField but
+// OverrideNumber is a numeric override field - same UX as OverrideField but
 // stores a number (or undefined for "inherit"). Sentinel comparison handles
 // the "user typed nothing" case without flipping to inherit.
 function OverrideNumber({
@@ -724,7 +722,7 @@ function OverrideNumber({
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between gap-2">
-        <Label className="text-sm">{label}</Label>
+        <Label className="">{label}</Label>
         <div className="flex items-center gap-2">
           <Label className="cursor-pointer text-[11px] text-muted-foreground">Override</Label>
           <Switch
@@ -767,7 +765,7 @@ function OverridePercent({
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between gap-2">
-        <Label className="text-sm">{label}</Label>
+        <Label className="">{label}</Label>
         <div className="flex items-center gap-2">
           <Label className="cursor-pointer text-[11px] text-muted-foreground">Override</Label>
           <Switch
@@ -787,14 +785,14 @@ function OverridePercent({
           disabled={!overridden}
           className="w-full accent-primary disabled:opacity-40"
         />
-        <span className="w-10 shrink-0 text-right font-mono text-xs text-muted-foreground">
+        <span className="w-10 shrink-0 text-right font-mono  text-muted-foreground">
           {pct(shown)}%
         </span>
       </div>
       {!overridden && (
         <p className="text-[11px] text-muted-foreground">Inherits: {pct(inherited)}%</p>
       )}
-      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+      {hint && <p className=" text-muted-foreground">{hint}</p>}
     </div>
   );
 }

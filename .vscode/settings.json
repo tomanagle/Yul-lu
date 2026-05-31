@@ -1,0 +1,20 @@
+{
+    "editor.formatOnSave": true,
+    // oxlint auto-fixes on save. The action id is `source.fixAll.oxc` (the
+    // Oxc extension's id) - NOT `source.fixAll.oxlint`, which is a silent
+    // no-op the extension never registers.
+    "editor.codeActionsOnSave": {
+        "source.fixAll.oxc": "always"
+    },
+    // Format the web languages with oxfmt via the Oxc extension, matching
+    // `bun run fmt` (frontend/package.json). Scoped per-language so Go and
+    // everything else keep their own formatters.
+    "[javascript]": { "editor.defaultFormatter": "oxc.oxc-vscode" },
+    "[javascriptreact]": { "editor.defaultFormatter": "oxc.oxc-vscode" },
+    "[typescript]": { "editor.defaultFormatter": "oxc.oxc-vscode" },
+    "[typescriptreact]": { "editor.defaultFormatter": "oxc.oxc-vscode" },
+    "[json]": { "editor.defaultFormatter": "oxc.oxc-vscode" },
+    "[jsonc]": { "editor.defaultFormatter": "oxc.oxc-vscode" },
+    "[css]": { "editor.defaultFormatter": "oxc.oxc-vscode" },
+    "[html]": { "editor.defaultFormatter": "oxc.oxc-vscode" }
+}
