@@ -65,7 +65,6 @@ yullu               # run the server (or use the service unit installed above)
 make dev            # HMR dev loop: vite on :47824 + air-rebuilt Go server on :47823
 make smoke          # round-trips initialize + tools/list over stdio
 make test           # runs the Go test suite
-make serve          # standalone stdio CLI in HTTP-only mode under air (legacy)
 ```
 
 ## What it does
@@ -85,6 +84,9 @@ to pull the relevant ones back. Memories are:
 - **Optionally dreamed** - the server can review recorded conversation
   turns and extract durable memories without the LLM having to call
   `store_memory` explicitly.
+- **Optionally filtered** by a similarity threshold so weak matches are
+  dropped instead of injected as noise, and **rated for relevance** per
+  recall via the Retrievals page (see [Retrieval relevance](#retrieval-relevance)).
 
 ## Reasoning via MCP sampling
 
@@ -141,6 +143,13 @@ interval = "30m"                  # scheduled dream cadence
 min_messages = 10                 # scheduler skips sessions smaller than this
 context_memories = 50             # how many memories the reasoner sees per pass
 on_idle_seconds = 0               # also dream after N idle seconds (0 = off)
+
+[retrieval]
+# Cosine-similarity floor (0.0-1.0) a memory must clear to be returned by a
+# vector search. 0 disables the floor (always return the top matches). Raise
+# it to drop weak matches so an unrelated query pulls nothing instead of
+# padding the result with noise. Set in the UI via Settings → Retrieval.
+min_similarity = 0.0
 ```
 
 ### Environment variables
@@ -154,9 +163,9 @@ on_idle_seconds = 0               # also dream after N idle seconds (0 = off)
 | `YULLU_REASON_PROVIDER` / `_MODEL` | reasoning provider/model |
 | `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `VOYAGE_API_KEY` | API keys |
 
-The desktop server always listens on `:47823`. The standalone stdio CLI
-also accepts `YULLU_TRANSPORT=http` and
-`YULLU_HTTP_ADDR=:8080` for clients that don't want a UI.
+The desktop server always listens on `:47823`. For clients that can't
+speak HTTP MCP, `yullu stdio` runs the MCP endpoint over stdio instead
+(legacy - prefer the HTTP endpoint exposed by the desktop server).
 
 ### Storage paths
 
@@ -171,7 +180,7 @@ also accepts `YULLU_TRANSPORT=http` and
 | tool | purpose |
 |---|---|
 | `store_memory` | Save a memory. Embeds + scopes to project. Returns the local `id` and the cross-machine `uuid`. |
-| `retrieve_memories` | Semantic search over the current project's memories. |
+| `retrieve_memories` | Semantic search over the current project's memories. Each hit carries a `similarity` (0-1 cosine match) and 1-based `rank`; hits below `[retrieval].min_similarity` are dropped. |
 | `update_memory` | Patch content and/or tags by local `id`. Re-embeds if content changed. |
 | `delete_memory` | Delete by local `id`. |
 | `list_memories` | Recently updated memories for the current project. Useful as an overview. |
@@ -283,48 +292,83 @@ immediately rather than queuing.
 | `context_memories` | `50` | How many existing memories the reasoner sees per pass. Bigger = better update/delete decisions, more tokens. |
 | `on_idle_seconds` | `0` | If > 0, also dream after this many seconds of `record_messages` silence. |
 
+## Retrieval relevance
+
+Vector search returns the top matches by embedding similarity. Two pieces
+of machinery keep those matches honest:
+
+**Similarity floor.** Each hit carries a `similarity` score (0-1 cosine
+match) and a 1-based `rank`. `[retrieval].min_similarity` is a floor: a
+memory must clear it to be returned, so a query with no strong match
+returns fewer - or zero - memories instead of padding the result with
+weak ones. Stored and query vectors are unit-normalized, which is what
+makes the raw `sqlite-vec` L2 distance translate into a meaningful cosine
+percentage. Default is `0` (off); raise it globally or per-project under
+**Settings → Retrieval** (the per-project value lives in the team-shared
+`.yullu/config.toml`, so a noisy monorepo can carry a stricter floor than a
+focused one).
+
+**Relevance feedback.** Every recall is logged locally (the query, the
+matched memory, its similarity, and its rank). The **Retrievals** page in
+the UI surfaces that history and lets you mark each one a *good* or *bad*
+match. This rates the *retrieval* ("was returning this memory for this
+query a good match?"), which is distinct from the 1-10 *quality* rating on
+the Review page ("is this memory worth keeping at all?") - the same memory
+can be a great match for one query and noise for another. Verdicts are
+keyed to the recall event, stay on your machine (never synced to
+`.yullu/`), and feed threshold tuning.
+
 ## Makefile
 
 Run `make help` to see the list.
 
 | target | what it does |
 |---|---|
-| `start` | Build the frontend, build + install `yullu`, run the desktop server at `:47823`. |
-| `dev` | HMR dev loop: Vite on `:5173` (proxies `/api` and `/mcp` to the Go server) + `air` rebuilds the Go binary on change. Open <http://localhost:5173> during dev. |
-| `install-app` | Build the frontend and install `yullu` to `$GOPATH/bin` without running it. |
-| `build` | Compile the standalone stdio MCP CLI to `./bin/yullu`. |
-| `install` | Install the standalone stdio CLI to `$GOPATH/bin`. |
-| `setup` | `install` + print the `claude mcp add` command. |
-| `serve` | Run the standalone CLI in HTTP-only mode under `air`. |
+| `start` | Build the frontend, build + install `yullu`, launch the desktop server at `:47823` and open it in the browser. |
+| `dev` | HMR dev loop: Vite on `:47824` (proxies `/api` and `/mcp` to the Go server on `:47823`) + `air` rebuilds the Go binary on change. Open <http://localhost:47824> during dev. |
+| `build` | Build the frontend and compile the `yullu` binary (frontend embedded) to `./bin/yullu`. |
+| `install` | Build the frontend + install `yullu` to `$GOPATH/bin`. |
+| `refresh` | Rebuild the Go binary + re-point the Stop hook at it, without rebuilding the frontend (embeds the current `frontend/dist`). |
+| `run` | Build + install, then run the server. |
 | `register` | Print the `claude mcp add yullu …` command for the desktop server. |
 | `smoke` | End-to-end stdio round-trip: initialize + tools/list (no API key needed). |
-| `test` | `go test ./...` |
+| `test` | Run the Go test suite (`go test -tags sqlite_fts5 ./...`). |
 | `tidy` | `go mod tidy` |
 | `fmt` | `gofmt -s -w .` |
 | `vet` | `go vet ./...` |
-| `clean` | Remove `./bin` and `cmd/app/frontend/dist`. |
+| `clean` | Remove `./bin` and `frontend/dist`. |
 
 ## How it works
 
+The layout is flat - there's no `cmd/` directory. The single `yullu`
+binary is both the desktop server and the CLI; subcommands and the
+`net/http` mux live at the repo root, business logic under `internal/`.
+
 ```
-cmd/
-├─ main.go               standalone stdio/HTTP MCP CLI (no UI)
-├─ app/                  desktop server - single binary that serves the UI,
-│  │                     REST API, and MCP endpoint on :47823
-│  ├─ main.go            net/http mux: / (embedded frontend), /api/*, /mcp
-│  ├─ app.go             App struct - methods shared between REST + MCP
-│  ├─ api.go             JSON REST handlers (one per App method)
-│  └─ frontend/          React + TanStack + shadcn (built into the binary)
+.
+├─ main.go               entry point: CLI subcommands (install, inject,
+│                        record-turn, …) + the desktop server's net/http
+│                        mux - / (embedded frontend), /api/*, /mcp on :47823
+├─ app.go                App struct - state machine; methods shared by the
+│                        REST API and MCP, operating on one *server.Server
+├─ stdio.go              standalone stdio/HTTP MCP transport (no UI)
+├─ inject.go             UserPromptSubmit recall hook (yullu inject)
+├─ record_turn.go        Stop-hook entry that POSTs turns to record_messages
+├─ install.go service.go install/uninstall + launchd/systemd service unit
+├─ frontend/             React + TanStack + shadcn, built to frontend/dist
+│                        and embedded via //go:embed
 └─ internal/
    ├─ applog             structured logger configuration (slog + JSON)
-   ├─ config             loads config.toml, applies env overrides
+   ├─ config             loads config.toml + per-project overrides + env
    ├─ ai                 Embedder / Reasoner interfaces + providers
-   │  ├─ voyage, openai (embedding); anthropic, openai (reasoning)
-   │  └─ per-call usage tracking → SQLite usage table
-   ├─ store              SQLite + sqlite-vec, schema migration, CRUD; also
-   │                     holds the session_messages dream buffer
+   │                     (voyage, openai embedding; anthropic, openai reasoning)
+   │                     + per-call usage tracking → SQLite usage table
+   ├─ store              SQLite + sqlite-vec: schema/migration, CRUD, the
+   │                     session_messages dream buffer, recall analytics
    ├─ scope              resolves project_id from git remote / path
    ├─ memlog             event log writer + reader for .yullu/logs/
+   ├─ handlers           JSON REST handlers (one file per endpoint) + the
+   │                     small dependency interfaces each is built from
    └─ server             MCP tool handlers, reconcile + dream algorithms.
                          Server.callReasoner tries MCP sampling first, then
                          falls back to the configured direct Reasoner.
@@ -336,11 +380,30 @@ so the service can't come up half-broken.
 
 **Database schema** (one DB per user, scoped by `project_id`):
 
-- `memories(id, uuid, project_id, content, tags_json, created_at, updated_at)`
+- `memories(id, uuid, project_id, content, tags_json, created_at, updated_at,
+  category, rating, rating_comment)`
   - `id` is local autoincrement; `uuid` is the cross-machine identifier.
+  - `category` is the content-shape axis (process/decision/gotcha/domain/style);
+    `rating` (1-10) + `rating_comment` come from the Review queue.
 - `memory_vectors` - sqlite-vec `vec0` virtual table, dimension-bound at
-  creation. Switching to an embedder with a different dim or ID is refused
+  creation. Vectors are stored unit-normalized so L2 distance maps to cosine
+  similarity. Switching to an embedder with a different dim or ID is refused
   at startup; delete the DB to change embedders.
+- `memories_fts` - FTS5 virtual table over content + tags (free local
+  keyword search, the fallback when there's no embedder).
+- `rejected_memories` - memories rated ≤ 5, archived as anti-examples the
+  next dream pass sees.
+- `session_messages` - the local dream buffer: raw conversation turns
+  awaiting extraction. Never written to `.yullu/logs/`.
+- `memory_events` - local observability log (created/updated/deleted/recalled),
+  scoped per project. Recall events carry the query, distance, similarity,
+  and rank. Never synced.
+- `retrieval_ratings` - per-recall relevance verdicts (+1/-1), keyed to a
+  `memory_events` recall row. Local-only.
+- `dream_passes` - one row per non-skipped dream run (counts the reasoner
+  produced), for the Stats dashboard.
+- `project_locations` - registry mapping each `project_id` to its on-disk
+  git root, so per-project paths resolve correctly across repos.
 - `usage` - per-call event log: provider, model, tokens, cost, latency.
 - `meta` - key/value: `embed_id`, `embed_dim`, per-project watermarks.
 
@@ -368,14 +431,14 @@ and the same `*server.Server` instance powers the UI and MCP, so anything
 you do in the browser is visible to the LLM and vice versa.
 
 **Stack:**
-- **Go `net/http`** with a single `ServeMux`: `/` (embedded SPA), `/api/*`
-  (REST handlers in `cmd/app/api.go`), `/mcp` (`mark3labs/mcp-go`'s
-  Streamable HTTP handler, hot-swappable when `SaveConfig` rebuilds the
-  Server).
-- **React 18** + **TypeScript** + **Vite** - frontend, built into
-  `cmd/app/frontend/dist/` and embedded via `//go:embed`.
-- **TanStack Router** - code-based routes (`/stats`, `/memories`, `/graph`,
-  `/dreaming`, `/settings`).
+- **Go `net/http`** with a single `ServeMux` (built in the root `main.go`):
+  `/` (embedded SPA), `/api/*` (REST handlers in `internal/handlers/`, one
+  file per endpoint), `/mcp` (`mark3labs/mcp-go`'s Streamable HTTP handler,
+  hot-swappable when `SaveConfig` rebuilds the Server).
+- **React** + **TypeScript** + **Vite** - frontend, built into
+  `frontend/dist/` and embedded via `//go:embed`.
+- **TanStack Router** - code-based routes (`/` stats, `/memories`, `/graph`,
+  `/dreaming`, `/review`, `/retrievals`, `/settings`).
 - **TanStack Query** - thin fetch wrappers in `src/lib/api.ts`, hooks in
   `src/lib/queries.ts` (one per `App.*` method).
 - **shadcn/ui** + **Tailwind CSS** - Radix-backed components in
