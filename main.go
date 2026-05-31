@@ -107,6 +107,7 @@ func main() {
 		DreamPasses:          app.store,
 		Rater:                app,
 		Recall:               app,
+		Retrievals:           app,
 		DreamContextMemories: app.DreamContextMemories,
 	})
 	mux.Handle("/mcp", mcpProxy{app: app})

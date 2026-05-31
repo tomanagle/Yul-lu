@@ -26,6 +26,7 @@ type RegisterParams struct {
 	DreamPasses      DreamPassLister
 	Rater            MemoryRater
 	Recall           MemoryRecaller
+	Retrievals       RetrievalAnalytics
 
 	// DreamContextMemories is a thunk that returns the current
 	// [dreaming].context_memories value, read under the App lock on
@@ -120,4 +121,12 @@ func Register(mux *http.ServeMux, p RegisterParams) {
 	// retrieve_memories for the common case.
 	mux.Handle("POST /api/memories/recall",
 		NewPostRecallHandler(PostRecallHandlerParams{Recall: p.Recall}))
+
+	// Retrieval analytics: the recall audit trail ("why was this memory
+	// surfaced for that query?") and per-recall relevance verdicts. Keyed
+	// to a recall event, not a memory — see RetrievalAnalytics.
+	mux.Handle("GET /api/retrievals",
+		NewGetRetrievalsHandler(GetRetrievalsHandlerParams{Retrievals: p.Retrievals}))
+	mux.Handle("POST /api/retrievals/{eventID}/rate",
+		NewPostRateRetrievalHandler(PostRateRetrievalHandlerParams{Retrievals: p.Retrievals}))
 }

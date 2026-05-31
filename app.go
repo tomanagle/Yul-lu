@@ -298,6 +298,7 @@ func (a *App) GetConfig() handlers.ConfigView {
 		DreamingMinMessages:     cfg.Dreaming.MinMessages,
 		DreamingContextMemories: cfg.Dreaming.ContextMemories,
 		DreamingOnIdleSeconds:   cfg.Dreaming.OnIdleSeconds,
+		RetrievalMinSimilarity:  cfg.Retrieval.MinSimilarity,
 	}
 }
 
@@ -317,6 +318,7 @@ func (a *App) SaveConfig(v handlers.ConfigView) (handlers.Status, error) {
 	a.cfg.Dreaming.MinMessages = v.DreamingMinMessages
 	a.cfg.Dreaming.ContextMemories = v.DreamingContextMemories
 	a.cfg.Dreaming.OnIdleSeconds = v.DreamingOnIdleSeconds
+	a.cfg.Retrieval.MinSimilarity = v.RetrievalMinSimilarity
 
 	cfgCopy := a.cfg
 	cfgPath := a.cfgPath
@@ -549,7 +551,11 @@ func (a *App) RecallMemories(ctx context.Context, projectID, query string, categ
 	if len(vecs) != 1 {
 		return nil, fmt.Errorf("embedder returned %d vectors, expected 1", len(vecs))
 	}
-	return snap.store.Search(ctx, projectID, vecs[0], limit, categories)
+	var minSim float64
+	if snap.srv != nil {
+		minSim = snap.srv.RetrievalMinSimilarity(projectID)
+	}
+	return snap.store.Search(ctx, projectID, vecs[0], query, limit, categories, minSim)
 }
 
 // ---------- MemoryRater ----------
@@ -580,6 +586,27 @@ func (a *App) RateMemory(ctx context.Context, id int64, rating int, comment stri
 		return nil, nil
 	}
 	return snap.store.Get(ctx, id)
+}
+
+// ---------- RetrievalAnalytics ----------
+
+// ListRetrievals returns recent recall events (with the memory they
+// returned + any verdict) for the Retrievals review surface.
+func (a *App) ListRetrievals(ctx context.Context, projectID string, limit int) ([]store.RetrievalEvent, error) {
+	snap := a.snapshot()
+	if snap.store == nil {
+		return nil, fmt.Errorf("store not open")
+	}
+	return snap.store.ListRetrievals(ctx, projectID, limit)
+}
+
+// RateRetrieval records a developer's +1/-1 verdict on a single recall.
+func (a *App) RateRetrieval(ctx context.Context, eventID int64, verdict int, comment string) error {
+	snap := a.snapshot()
+	if snap.store == nil {
+		return fmt.Errorf("store not open")
+	}
+	return snap.store.RateRetrieval(ctx, eventID, verdict, comment)
 }
 
 // ---------- MessageRecorder ----------
@@ -889,6 +916,9 @@ func configOverrideToPayload(o config.ConfigOverride) handlers.ProjectOverridePa
 		p.DreamingContextMemories = o.Dreaming.ContextMemories
 		p.DreamingOnIdleSeconds = o.Dreaming.OnIdleSeconds
 	}
+	if o.Retrieval != nil {
+		p.RetrievalMinSimilarity = o.Retrieval.MinSimilarity
+	}
 	return p
 }
 
@@ -934,6 +964,9 @@ func payloadToConfigOverride(p handlers.ProjectOverridePayload) config.ConfigOve
 			OnIdleSeconds:   p.DreamingOnIdleSeconds,
 		}
 	}
+	if p.RetrievalMinSimilarity != nil {
+		o.Retrieval = &config.RetrievalOverride{MinSimilarity: p.RetrievalMinSimilarity}
+	}
 	return o
 }
 
@@ -956,5 +989,6 @@ func effectiveFromConfig(c config.Config) handlers.EffectiveProjectConfig {
 		DreamingMinMessages:     c.Dreaming.MinMessages,
 		DreamingContextMemories: c.Dreaming.ContextMemories,
 		DreamingOnIdleSeconds:   c.Dreaming.OnIdleSeconds,
+		RetrievalMinSimilarity:  c.Retrieval.MinSimilarity,
 	}
 }

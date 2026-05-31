@@ -143,6 +143,14 @@ func (s *Server) resolveProject(projectID string) config.Config {
 	return effective
 }
 
+// RetrievalMinSimilarity returns the effective cosine-similarity floor for
+// projectID after stacking overrides. Exported so the REST recall path
+// (App.RecallMemories), which lives outside this package and bypasses the
+// MCP handler, resolves the floor identically to handleRetrieve.
+func (s *Server) RetrievalMinSimilarity(projectID string) float64 {
+	return s.resolveProject(projectID).Retrieval.MinSimilarity
+}
+
 // InvalidateProjectConfig drops the cached resolved config for projectID
 // so the next resolveProject() picks up freshly-edited override files.
 // Called by app.SaveProjectOverrides after a write succeeds.
@@ -502,7 +510,8 @@ func (s *Server) handleRetrieve(ctx context.Context, req mcp.CallToolRequest) (*
 	if err != nil {
 		return mcp.NewToolResultErrorFromErr("embed", err), nil
 	}
-	hits, err := s.store.Search(ctx, projectID, vecs[0], limit, cats)
+	minSim := s.resolveProject(projectID).Retrieval.MinSimilarity
+	hits, err := s.store.Search(ctx, projectID, vecs[0], query, limit, cats, minSim)
 	if err != nil {
 		return mcp.NewToolResultErrorFromErr("search", err), nil
 	}

@@ -19,6 +19,7 @@ import {
   ClipboardCheck,
   FolderOpen,
   Network,
+  Radar,
   Settings,
   Sparkles,
   type LucideIcon,
@@ -27,6 +28,7 @@ import {
 import { DreamingPage } from "@/routes/dreaming";
 import { GraphPage } from "@/routes/graph";
 import { MemoriesPage } from "@/routes/memories";
+import { RetrievalsPage } from "@/routes/retrievals";
 import { ReviewPage } from "@/routes/review";
 import { SettingsPage } from "@/routes/settings";
 import { StatsPage } from "@/routes/stats";
@@ -52,6 +54,7 @@ const PRIMARY_NAV: NavEntry[] = [
   { to: "/graph", label: "Graph", icon: Network },
   { to: "/dreaming", label: "Dreaming", icon: Sparkles },
   { to: "/review", label: "Review", icon: ClipboardCheck },
+  { to: "/retrievals", label: "Retrievals", icon: Radar },
 ];
 
 const SETTINGS_NAV: NavEntry = {
@@ -307,6 +310,12 @@ const reviewRoute = createRoute({
   component: ReviewPage,
 });
 
+const retrievalsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/retrievals",
+  component: RetrievalsPage,
+});
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   memoriesRoute,
@@ -314,6 +323,7 @@ const routeTree = rootRoute.addChildren([
   statsRoute,
   graphRoute,
   reviewRoute,
+  retrievalsRoute,
   settingsRoute,
 ]);
 

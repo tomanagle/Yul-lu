@@ -155,6 +155,34 @@ func (f *fakeMemoryRecaller) RecallMemories(
 	return f.recallOut, f.recallErr
 }
 
+// fakeRetrievalAnalytics satisfies RetrievalAnalytics. listOut/listErr
+// drive ListRetrievals; rateErr drives RateRetrieval. Captured inputs let
+// tests assert the handler parsed the path + body correctly.
+type fakeRetrievalAnalytics struct {
+	listOut []store.RetrievalEvent
+	listErr error
+	rateErr error
+
+	gotListProjectID string
+	gotListLimit     int
+	gotRateEventID   int64
+	gotRateVerdict   int
+	gotRateComment   string
+}
+
+func (f *fakeRetrievalAnalytics) ListRetrievals(_ context.Context, projectID string, limit int) ([]store.RetrievalEvent, error) {
+	f.gotListProjectID = projectID
+	f.gotListLimit = limit
+	return f.listOut, f.listErr
+}
+
+func (f *fakeRetrievalAnalytics) RateRetrieval(_ context.Context, eventID int64, verdict int, comment string) error {
+	f.gotRateEventID = eventID
+	f.gotRateVerdict = verdict
+	f.gotRateComment = comment
+	return f.rateErr
+}
+
 // fakeDreamer satisfies Dreamer. dreamOut + dreamErr drive Dream; the
 // captured opts let tests assert ContextMemories etc. were forwarded.
 type fakeDreamer struct {
@@ -171,11 +199,12 @@ func (f *fakeDreamer) Dream(_ context.Context, opts server.DreamOptions) (*serve
 // Compile-time interface checks so missing methods surface here, not at
 // the test callsite. Add new fakes to the var block when introducing them.
 var (
-	_ StatusService   = (*fakeStatusService)(nil)
-	_ MemoryRater     = (*fakeRater)(nil)
-	_ MessageRecorder = (*fakeMessageRecorder)(nil)
-	_ MemoryReader    = (*fakeMemoryReader)(nil)
-	_ MemoryEditor    = (*fakeMemoryEditor)(nil)
-	_ MemoryRecaller  = (*fakeMemoryRecaller)(nil)
-	_ Dreamer         = (*fakeDreamer)(nil)
+	_ StatusService      = (*fakeStatusService)(nil)
+	_ MemoryRater        = (*fakeRater)(nil)
+	_ MessageRecorder    = (*fakeMessageRecorder)(nil)
+	_ MemoryReader       = (*fakeMemoryReader)(nil)
+	_ MemoryEditor       = (*fakeMemoryEditor)(nil)
+	_ MemoryRecaller     = (*fakeMemoryRecaller)(nil)
+	_ Dreamer            = (*fakeDreamer)(nil)
+	_ RetrievalAnalytics = (*fakeRetrievalAnalytics)(nil)
 )

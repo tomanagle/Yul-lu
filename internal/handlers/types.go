@@ -41,6 +41,10 @@ type ConfigView struct {
 	DreamingMinMessages     int    `json:"dreaming_min_messages"`
 	DreamingContextMemories int    `json:"dreaming_context_memories"`
 	DreamingOnIdleSeconds   int    `json:"dreaming_on_idle_seconds"`
+
+	// RetrievalMinSimilarity is the cosine-similarity floor (0–1) a memory
+	// must clear to be returned by a vector search. 0 disables the floor.
+	RetrievalMinSimilarity float64 `json:"retrieval_min_similarity"`
 }
 
 // SessionStats is the dream-buffer summary surfaced on the Dreaming page.

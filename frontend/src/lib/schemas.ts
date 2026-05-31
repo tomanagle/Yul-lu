@@ -44,6 +44,9 @@ export const ConfigViewSchema = z.object({
   dreaming_min_messages: z.number(),
   dreaming_context_memories: z.number(),
   dreaming_on_idle_seconds: z.number(),
+  // Cosine-similarity floor (0–1) a memory must clear to be returned by a
+  // vector search. 0 disables the floor.
+  retrieval_min_similarity: z.number(),
 });
 export type ConfigView = z.infer<typeof ConfigViewSchema>;
 
@@ -136,6 +139,10 @@ export const MemorySchema = z.object({
   created_at: z.string(),
   updated_at: z.string(),
   score: z.number().optional(),
+  // similarity is the cosine match (0–1) derived from score, present only on
+  // search results. rank is the 1-based position in that result set.
+  similarity: z.number().optional(),
+  rank: z.number().optional(),
   // rating is the user-supplied quality score (6..10). Memories rated ≤ 5
   // are moved out of the memories table entirely, so a present rating
   // here is always ≥ 6. Absent means un-rated (lives in the Review queue).
@@ -257,6 +264,8 @@ export const ProjectOverridePayloadSchema = z.object({
   dreaming_min_messages: z.number().optional(),
   dreaming_context_memories: z.number().optional(),
   dreaming_on_idle_seconds: z.number().optional(),
+
+  retrieval_min_similarity: z.number().optional(),
 });
 export type ProjectOverridePayload = z.infer<typeof ProjectOverridePayloadSchema>;
 
@@ -275,6 +284,7 @@ export const EffectiveProjectConfigSchema = z.object({
   dreaming_min_messages: z.number(),
   dreaming_context_memories: z.number(),
   dreaming_on_idle_seconds: z.number(),
+  retrieval_min_similarity: z.number(),
 });
 export type EffectiveProjectConfig = z.infer<typeof EffectiveProjectConfigSchema>;
 
@@ -286,6 +296,26 @@ export const ProjectOverridesViewSchema = z.object({
   warnings: z.array(z.string()).optional(),
 });
 export type ProjectOverridesView = z.infer<typeof ProjectOverridesViewSchema>;
+
+// ----- Retrieval analytics -------------------------------------------------
+
+// One past recall: the memory that surfaced, the query that pulled it, how
+// close the match was (similarity/rank), and the developer's verdict if any.
+// verdict is +1 (good match) / -1 (bad match); absent means unrated.
+export const RetrievalEventSchema = z.object({
+  event_id: z.number(),
+  memory_id: z.number(),
+  project_id: z.string(),
+  at: z.string(),
+  query: z.string().optional(),
+  similarity: z.number().optional(),
+  rank: z.number().optional(),
+  memory_content: z.string().optional(),
+  memory_category: MemoryCategorySchema.optional(),
+  verdict: z.number().optional(),
+  comment: z.string().optional(),
+});
+export type RetrievalEvent = z.infer<typeof RetrievalEventSchema>;
 
 // ----- List envelopes ------------------------------------------------------
 
@@ -300,6 +330,7 @@ export const DailyMemoryEventsListSchema = listOf(DailyMemoryEventsSchema);
 export const DailyUsageListSchema = listOf(DailyUsageSchema);
 export const UsageBucketListSchema = listOf(UsageBucketSchema);
 export const DreamPassesListSchema = listOf(DreamPassSchema);
+export const RetrievalsListSchema = listOf(RetrievalEventSchema);
 
 // ----- Buffered sessions ---------------------------------------------------
 

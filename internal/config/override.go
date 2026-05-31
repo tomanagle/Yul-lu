@@ -25,12 +25,19 @@ import (
 // the vector index. The schema below deliberately omits the embedding
 // section to make this impossible to express.
 type ConfigOverride struct {
-	Reasoning *ProviderOverride `toml:"reasoning,omitempty"`
-	OpenAI    *KeyOverride      `toml:"openai,omitempty"`
-	Anthropic *KeyOverride      `toml:"anthropic,omitempty"`
-	Voyage    *KeyOverride      `toml:"voyage,omitempty"`
-	Sync      *SyncOverride     `toml:"sync,omitempty"`
-	Dreaming  *DreamingOverride `toml:"dreaming,omitempty"`
+	Reasoning *ProviderOverride  `toml:"reasoning,omitempty"`
+	OpenAI    *KeyOverride       `toml:"openai,omitempty"`
+	Anthropic *KeyOverride       `toml:"anthropic,omitempty"`
+	Voyage    *KeyOverride       `toml:"voyage,omitempty"`
+	Sync      *SyncOverride      `toml:"sync,omitempty"`
+	Dreaming  *DreamingOverride  `toml:"dreaming,omitempty"`
+	Retrieval *RetrievalOverride `toml:"retrieval,omitempty"`
+}
+
+// RetrievalOverride lets the similarity floor vary per project — e.g. a
+// strict floor on a noisy monorepo, off on a small focused one.
+type RetrievalOverride struct {
+	MinSimilarity *float64 `toml:"min_similarity,omitempty"`
 }
 
 // ProviderOverride lets reasoning provider/model be picked per project.
@@ -117,6 +124,9 @@ func Merge(base Config, o ConfigOverride) Config {
 		if o.Dreaming.OnIdleSeconds != nil {
 			base.Dreaming.OnIdleSeconds = *o.Dreaming.OnIdleSeconds
 		}
+	}
+	if o.Retrieval != nil && o.Retrieval.MinSimilarity != nil {
+		base.Retrieval.MinSimilarity = *o.Retrieval.MinSimilarity
 	}
 	return base
 }

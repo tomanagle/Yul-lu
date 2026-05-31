@@ -308,6 +308,34 @@ function GlobalSettings() {
         </CardContent>
       </Card>
 
+      <Card>
+        <CardHeader>
+          <CardTitle>Retrieval</CardTitle>
+          <CardDescription>
+            Filter weak matches out of memory search. The minimum match score is a cosine-similarity
+            floor — a memory must score at least this high against the query to be returned. 0%
+            disables the floor (always return the top matches). Higher is stricter: an unrelated
+            prompt then pulls nothing instead of padding the results with noise.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <Field
+            label={`Minimum match score: ${Math.round((cfg.retrieval_min_similarity || 0) * 100)}%`}
+            hint="0% = off. Try 50–65% to start, then raise it if irrelevant memories keep surfacing."
+          >
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={Math.round((cfg.retrieval_min_similarity || 0) * 100)}
+              onChange={(e) => update({ retrieval_min_similarity: Number(e.target.value) / 100 })}
+              className="w-full accent-primary"
+            />
+          </Field>
+        </CardContent>
+      </Card>
+
       {save.error && (
         <Card className="border-destructive/40 bg-destructive/10">
           <CardContent className="p-3 text-sm text-destructive">{String(save.error)}</CardContent>
@@ -516,6 +544,13 @@ function ProjectSettings({ projectID }: ProjectSettingsProps) {
             value={repo.dreaming_context_memories}
             onChange={(v) => repoSet("dreaming_context_memories", v)}
           />
+          <OverridePercent
+            label="Minimum match score"
+            inherited={effective.retrieval_min_similarity}
+            value={repo.retrieval_min_similarity}
+            onChange={(v) => repoSet("retrieval_min_similarity", v)}
+            hint="Cosine-similarity floor for memory search on this project. 0% = off."
+          />
         </CardContent>
       </Card>
 
@@ -706,6 +741,60 @@ function OverrideNumber({
         placeholder={overridden ? undefined : `Inherits: ${inherited}`}
         disabled={!overridden}
       />
+    </div>
+  );
+}
+
+// OverridePercent is a 0–1 similarity override surfaced as a 0–100% slider.
+// Mirrors OverrideNumber's inherit/override UX but converts to percent for
+// display so the user reasons in the same units as the global Settings tab.
+function OverridePercent({
+  label,
+  inherited,
+  value,
+  onChange,
+  hint,
+}: {
+  label: string;
+  inherited: number; // 0–1
+  value: number | undefined; // 0–1, or undefined to inherit
+  onChange: (v: number | undefined) => void;
+  hint?: string;
+}) {
+  const overridden = value !== undefined;
+  const pct = (n: number) => Math.round(n * 100);
+  const shown = overridden ? (value ?? 0) : inherited;
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <Label className="text-sm">{label}</Label>
+        <div className="flex items-center gap-2">
+          <Label className="cursor-pointer text-[11px] text-muted-foreground">Override</Label>
+          <Switch
+            checked={overridden}
+            onCheckedChange={(on) => onChange(on ? (value ?? inherited) : undefined)}
+          />
+        </div>
+      </div>
+      <div className="flex items-center gap-3">
+        <input
+          type="range"
+          min={0}
+          max={100}
+          step={1}
+          value={pct(shown)}
+          onChange={(e) => onChange(Number(e.target.value) / 100)}
+          disabled={!overridden}
+          className="w-full accent-primary disabled:opacity-40"
+        />
+        <span className="w-10 shrink-0 text-right font-mono text-xs text-muted-foreground">
+          {pct(shown)}%
+        </span>
+      </div>
+      {!overridden && (
+        <p className="text-[11px] text-muted-foreground">Inherits: {pct(inherited)}%</p>
+      )}
+      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
     </div>
   );
 }

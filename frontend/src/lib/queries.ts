@@ -22,6 +22,7 @@ import {
   GetMemoryGraph,
   GetMemoryStats,
   GetProjectOverrides,
+  GetRetrievals,
   GetSessionStats,
   GetUnratedMemories,
   GetUsageByDay,
@@ -29,6 +30,7 @@ import {
   ListMemories,
   ListProjects,
   RateMemory,
+  RateRetrieval,
   Retry,
   SaveConfig,
   SaveDreamPrompt,
@@ -66,6 +68,7 @@ export const qk = {
   dreamProgress: ["dream-progress"] as const,
   dreamPasses: (projectID: string) => ["dream-passes", projectID] as const,
   unratedMemories: (projectID: string) => ["unrated-memories", projectID] as const,
+  retrievals: (projectID: string) => ["retrievals", projectID] as const,
 };
 
 // Polling cadences. Local SQLite queries via Wails are cheap (sub-ms), so we
@@ -332,6 +335,32 @@ export function useRateMemory(projectID: string) {
       qc.invalidateQueries({ queryKey: qk.unratedMemories(projectID) });
       qc.invalidateQueries({ queryKey: qk.memories(projectID) });
       qc.invalidateQueries({ queryKey: qk.memoryStats(projectID) });
+    },
+  });
+}
+
+// useRetrievals powers the Retrievals review surface: recent recalls with
+// the query that pulled each memory, the match strength, and any verdict.
+export function useRetrievals(projectID: string) {
+  return useQuery({
+    queryKey: qk.retrievals(projectID),
+    queryFn: () => GetRetrievals(projectID, 200),
+    enabled: !!projectID,
+    staleTime: 0,
+    refetchInterval: POLL_SLOW,
+    refetchIntervalInBackground: false,
+  });
+}
+
+// useRateRetrieval submits a +1/-1 relevance verdict on one recall. On
+// success we refetch the retrievals list so the just-rated row reflects its
+// new verdict inline.
+export function useRateRetrieval(projectID: string) {
+  const qc = useQueryClient();
+  return useMutation<unknown, Error, { eventID: number; verdict: 1 | -1; comment: string }>({
+    mutationFn: ({ eventID, verdict, comment }) => RateRetrieval(eventID, verdict, comment),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.retrievals(projectID) });
     },
   });
 }

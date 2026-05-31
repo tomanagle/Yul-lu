@@ -42,6 +42,8 @@ type ProjectOverridePayload struct {
 	DreamingMinMessages     *int    `json:"dreaming_min_messages,omitempty"`
 	DreamingContextMemories *int    `json:"dreaming_context_memories,omitempty"`
 	DreamingOnIdleSeconds   *int    `json:"dreaming_on_idle_seconds,omitempty"`
+
+	RetrievalMinSimilarity *float64 `json:"retrieval_min_similarity,omitempty"`
 }
 
 // EffectiveProjectConfig is the flat read-only resolved config for a
@@ -63,4 +65,6 @@ type EffectiveProjectConfig struct {
 	DreamingMinMessages     int    `json:"dreaming_min_messages"`
 	DreamingContextMemories int    `json:"dreaming_context_memories"`
 	DreamingOnIdleSeconds   int    `json:"dreaming_on_idle_seconds"`
+
+	RetrievalMinSimilarity float64 `json:"retrieval_min_similarity"`
 }

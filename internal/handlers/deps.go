@@ -63,6 +63,16 @@ type MemoryRater interface {
 	RateMemory(ctx context.Context, id int64, rating int, comment string) (*store.Memory, error)
 }
 
+// RetrievalAnalytics exposes the recall audit trail and the per-recall
+// relevance verdicts. ListRetrievals returns recent recalls joined to the
+// memory each returned (newest first); RateRetrieval records a +1/-1
+// verdict on one recall. Distinct from MemoryRater — that rates a memory's
+// intrinsic quality, this rates whether a *retrieval* was a good match.
+type RetrievalAnalytics interface {
+	ListRetrievals(ctx context.Context, projectID string, limit int) ([]store.RetrievalEvent, error)
+	RateRetrieval(ctx context.Context, eventID int64, verdict int, comment string) error
+}
+
 // ProjectLister enumerates distinct project_ids known to the store.
 type ProjectLister interface {
 	ListProjects(ctx context.Context) ([]string, error)

@@ -41,6 +41,16 @@ type Memory struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Score     float64   `json:"score,omitempty"` // populated only by Search
+	// Similarity is the cosine similarity (0–1) derived from Score, populated
+	// only by Search. Unlike Score (raw L2 distance, lower = closer) it's
+	// bounded and human-facing — it's the % the UI shows and the axis the
+	// retrieval threshold gates on. Valid only for unit-normalized vectors
+	// (see normalizeVec); 1.0 is an exact match, 0 is orthogonal-or-worse.
+	Similarity float64 `json:"similarity,omitempty"`
+	// Rank is the 1-based position of this memory in a Search result set
+	// (1 = closest). Populated only by Search so callers and the recall
+	// analytics can record where a memory landed without re-deriving order.
+	Rank int `json:"rank,omitempty"`
 	// Rating is the user-assigned quality score (1–10) for the review queue.
 	// Nil means un-rated. Memories rated ≤ 5 are moved to rejected_memories
 	// and removed from this table — so a non-nil Rating here is always ≥ 6.
@@ -305,6 +315,25 @@ func (s *Store) init(embedderID string) error {
 		`CREATE INDEX IF NOT EXISTS idx_memory_events_kind ON memory_events(kind, at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_events_memory ON memory_events(memory_id, at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_events_project ON memory_events(project_id, at DESC)`,
+		// Developer feedback on retrieval *relevance* — keyed to a single
+		// recall (memory_events.id with kind='recalled'), NOT to the memory.
+		// "Was returning THIS memory for THIS query a good match?" is a
+		// different question from "is this memory any good" (that's the 1–10
+		// rating on memories). verdict is +1 (good) / -1 (bad). query is
+		// denormalized off the event metadata so a rating survives event
+		// pruning. UNIQUE(event_id) lets a developer change their mind via
+		// upsert. Local-only — never sync'd, like memory_events.
+		`CREATE TABLE IF NOT EXISTS retrieval_ratings (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			event_id INTEGER NOT NULL UNIQUE,
+			memory_id INTEGER,
+			project_id TEXT NOT NULL,
+			query TEXT,
+			verdict INTEGER NOT NULL,
+			comment TEXT,
+			rated_at INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_retrieval_ratings_project ON retrieval_ratings(project_id, rated_at DESC)`,
 		// Dream-pass log: one row per non-skipped dream run, recording the
 		// counts the reasoner produced. Used by the Stats dashboard to show
 		// "how active is the dreamer" without needing to scan memory_events.
@@ -649,7 +678,9 @@ func (s *Store) Insert(ctx context.Context, memoryUUID, projectID, content strin
 	if err != nil {
 		return 0, err
 	}
-	blob, err := vec.SerializeFloat32(vector)
+	// Store unit-normalized so L2 distance maps to cosine similarity at
+	// query time (see normalizeVec).
+	blob, err := vec.SerializeFloat32(normalizeVec(vector))
 	if err != nil {
 		return 0, err
 	}
@@ -704,7 +735,7 @@ func (s *Store) Update(ctx context.Context, id int64, content *string, tags *[]s
 		if len(newVector) != s.dim {
 			return fmt.Errorf("vector dim %d != expected %d", len(newVector), s.dim)
 		}
-		blob, err := vec.SerializeFloat32(newVector)
+		blob, err := vec.SerializeFloat32(normalizeVec(newVector))
 		if err != nil {
 			return err
 		}
@@ -1092,6 +1123,58 @@ func (s *Store) GetVector(ctx context.Context, memoryID int64) ([]float32, error
 	return out, nil
 }
 
+// normalizeVec returns a unit-length (L2 norm = 1) copy of v. sqlite-vec
+// reports raw L2 distance; once both stored and query vectors are unit
+// vectors that distance maps cleanly to cosine similarity via
+// distanceToSimilarity — which the retrieval threshold and the % shown in
+// the UI both depend on. Voyage/OpenAI already return unit vectors, so this
+// is a no-op for them (up to float rounding); the call guards a future
+// local embedder that doesn't normalize. A zero vector is returned unchanged
+// (no divide-by-zero).
+func normalizeVec(v []float32) []float32 {
+	var sum float64
+	for _, x := range v {
+		sum += float64(x) * float64(x)
+	}
+	if sum == 0 {
+		return v
+	}
+	inv := float32(1 / math.Sqrt(sum))
+	out := make([]float32, len(v))
+	for i, x := range v {
+		out[i] = x * inv
+	}
+	return out
+}
+
+// distanceToSimilarity maps a sqlite-vec L2 distance between two unit
+// vectors to cosine similarity clamped to [0,1]. For unit vectors
+// d² = 2(1−cos), so cos = 1 − d²/2. Cosine can go negative for opposed
+// vectors, but for text embeddings that's effectively "no match", so we
+// floor at 0.
+func distanceToSimilarity(d float64) float64 {
+	sim := 1 - (d*d)/2
+	if sim < 0 {
+		return 0
+	}
+	if sim > 1 {
+		return 1
+	}
+	return sim
+}
+
+// similarityToMaxDistance inverts distanceToSimilarity: the largest L2
+// distance still meeting minSim. Lets Search drop sub-threshold hits with a
+// plain distance compare instead of recomputing similarity per row. minSim
+// ≤ 0 means "no floor" and callers skip filtering entirely rather than
+// calling this.
+func similarityToMaxDistance(minSim float64) float64 {
+	if minSim > 1 {
+		minSim = 1
+	}
+	return math.Sqrt(2 * (1 - minSim))
+}
+
 // Search returns the top-k nearest memories for projectID by vector distance.
 // Lower Score = closer (sqlite-vec returns L2 distance by default).
 // SearchText runs a free, local, BM25-ranked full-text search against the
@@ -1184,16 +1267,31 @@ func sanitizeFTSQuery(input string) string {
 // because the top-k by vector distance might mostly be wrong-category;
 // without the bump the user can ask for k=5 style memories and get 2
 // back because 3 of the top-5 nearest were process memories.
-func (s *Store) Search(ctx context.Context, projectID string, query []float32, k int, categories []MemoryCategory) ([]Memory, error) {
+//
+// queryText is the human query the vector was embedded from, recorded on
+// the recall event for analytics (the vector itself is opaque). minSimilarity
+// (0–1) drops hits whose cosine similarity falls below the floor; 0 disables
+// the floor. Filtering happens over the top-k by distance, so the floor
+// trims weak matches rather than widening the search.
+func (s *Store) Search(ctx context.Context, projectID string, query []float32, queryText string, k int, categories []MemoryCategory, minSimilarity float64) ([]Memory, error) {
 	if len(query) != s.dim {
 		return nil, fmt.Errorf("query dim %d != expected %d", len(query), s.dim)
 	}
 	if k <= 0 {
 		k = 5
 	}
-	blob, err := vec.SerializeFloat32(query)
+	// Store + query vectors are unit-normalized so v.distance maps to cosine
+	// similarity (see normalizeVec / distanceToSimilarity).
+	blob, err := vec.SerializeFloat32(normalizeVec(query))
 	if err != nil {
 		return nil, err
+	}
+
+	// Translate the similarity floor into a max L2 distance once, up front,
+	// so the per-row check is a plain compare. maxDist < 0 means "no floor".
+	maxDist := -1.0
+	if minSimilarity > 0 {
+		maxDist = similarityToMaxDistance(minSimilarity)
 	}
 
 	// Validate + dedupe categories. Invalid entries are dropped silently
@@ -1264,6 +1362,13 @@ func (s *Store) Search(ctx context.Context, projectID string, query []float32, k
 		if err := rows.Scan(&m.ID, &m.UUID, &m.ProjectID, &m.Content, &tagsJSON, &created, &updated, &category, &dist); err != nil {
 			return nil, err
 		}
+		// Drop sub-threshold hits. Rows arrive in ascending distance order,
+		// so once one exceeds maxDist every later row does too — but we
+		// `continue` rather than `break` to stay robust if that ordering
+		// assumption ever changes.
+		if maxDist >= 0 && dist > maxDist {
+			continue
+		}
 		_ = json.Unmarshal([]byte(tagsJSON), &m.Tags)
 		m.CreatedAt = time.Unix(created, 0)
 		m.UpdatedAt = time.Unix(updated, 0)
@@ -1271,6 +1376,8 @@ func (s *Store) Search(ctx context.Context, projectID string, query []float32, k
 			m.Category = MemoryCategory(category.String)
 		}
 		m.Score = dist
+		m.Similarity = distanceToSimilarity(dist)
+		m.Rank = len(out) + 1 // 1-based position among returned hits
 		out = append(out, m)
 	}
 	if err := rows.Err(); err != nil {
@@ -1278,7 +1385,13 @@ func (s *Store) Search(ctx context.Context, projectID string, query []float32, k
 	}
 	for _, m := range out {
 		s.recordMemoryEvent(ctx, EventRecalled, m.ID, m.ProjectID,
-			map[string]any{"via": "vector"})
+			map[string]any{
+				"via":        "vector",
+				"query":      queryText,
+				"distance":   m.Score,
+				"similarity": m.Similarity,
+				"rank":       m.Rank,
+			})
 	}
 	return out, nil
 }
@@ -1354,6 +1467,157 @@ func (s *Store) recordMemoryEvent(ctx context.Context, kind MemoryEventKind, mem
 	_, _ = s.db.ExecContext(ctx,
 		`INSERT INTO memory_events(at, memory_id, project_id, kind, metadata_json) VALUES (?, ?, ?, ?, ?)`,
 		time.Now().Unix(), memArg, projectID, string(kind), metaJSON)
+}
+
+// recallMeta is the shape Search writes into a recalled event's
+// metadata_json. Decoded back out by ListRetrievals so the UI can show why
+// a memory surfaced (the query it matched, how close, and at what rank).
+// Fields are best-effort — older events predate some keys and decode to
+// their zero value.
+type recallMeta struct {
+	Via        string  `json:"via"`
+	Query      string  `json:"query"`
+	Distance   float64 `json:"distance"`
+	Similarity float64 `json:"similarity"`
+	Rank       int     `json:"rank"`
+}
+
+// RetrievalEvent is one past recall joined to the memory it returned and any
+// developer verdict on it. Powers the "why was this retrieved + was it a
+// good match?" review surface. MemoryContent is empty when the memory has
+// since been deleted (the event outlives the row). Verdict is nil until the
+// developer rates it; +1 = good match, -1 = bad match.
+type RetrievalEvent struct {
+	EventID        int64          `json:"event_id"`
+	MemoryID       int64          `json:"memory_id"`
+	ProjectID      string         `json:"project_id"`
+	At             time.Time      `json:"at"`
+	Query          string         `json:"query"`
+	Similarity     float64        `json:"similarity"`
+	Rank           int            `json:"rank"`
+	MemoryContent  string         `json:"memory_content,omitempty"`
+	MemoryCategory MemoryCategory `json:"memory_category,omitempty"`
+	Verdict        *int           `json:"verdict,omitempty"`
+	Comment        string         `json:"comment,omitempty"`
+}
+
+// ListRetrievals returns recent recall events for projectID (newest first),
+// each joined to the memory it returned and the developer's verdict if one
+// exists. An empty projectID spans all projects. The memory join is a LEFT
+// join so a recall of a since-deleted memory still appears (with empty
+// content) rather than vanishing from the audit trail.
+func (s *Store) ListRetrievals(ctx context.Context, projectID string, limit int) ([]RetrievalEvent, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	sqlText := `
+		SELECT e.id, e.memory_id, e.project_id, e.at, e.metadata_json,
+		       m.content, m.category,
+		       r.verdict, r.comment
+		FROM memory_events e
+		LEFT JOIN memories m ON m.id = e.memory_id
+		LEFT JOIN retrieval_ratings r ON r.event_id = e.id
+		WHERE e.kind = ?`
+	args := []any{string(EventRecalled)}
+	if projectID != "" {
+		sqlText += ` AND e.project_id = ?`
+		args = append(args, projectID)
+	}
+	sqlText += ` ORDER BY e.at DESC, e.id DESC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := s.db.QueryContext(ctx, sqlText, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []RetrievalEvent
+	for rows.Next() {
+		var (
+			ev       RetrievalEvent
+			at       int64
+			memID    sql.NullInt64
+			metaJSON sql.NullString
+			content  sql.NullString
+			category sql.NullString
+			verdict  sql.NullInt64
+			comment  sql.NullString
+		)
+		if err := rows.Scan(&ev.EventID, &memID, &ev.ProjectID, &at, &metaJSON,
+			&content, &category, &verdict, &comment); err != nil {
+			return nil, err
+		}
+		ev.At = time.Unix(at, 0)
+		if memID.Valid {
+			ev.MemoryID = memID.Int64
+		}
+		if metaJSON.Valid {
+			var meta recallMeta
+			if json.Unmarshal([]byte(metaJSON.String), &meta) == nil {
+				ev.Query = meta.Query
+				ev.Similarity = meta.Similarity
+				ev.Rank = meta.Rank
+			}
+		}
+		if content.Valid {
+			ev.MemoryContent = content.String
+		}
+		if category.Valid {
+			ev.MemoryCategory = MemoryCategory(category.String)
+		}
+		if verdict.Valid {
+			v := int(verdict.Int64)
+			ev.Verdict = &v
+		}
+		if comment.Valid {
+			ev.Comment = comment.String
+		}
+		out = append(out, ev)
+	}
+	return out, rows.Err()
+}
+
+// ErrNotRecallEvent is returned by RateRetrieval when eventID doesn't name a
+// recall event (wrong kind, or no such event) — there's nothing to rate.
+var ErrNotRecallEvent = errors.New("event is not a recall event")
+
+// RateRetrieval records (or updates) a developer verdict on a single recall.
+// verdict must be +1 (good match) or -1 (bad match). memory_id, project_id,
+// and the query are pulled from the recall event so a rating row is
+// self-contained even if the event is later pruned. Re-rating the same event
+// overwrites the prior verdict (UNIQUE(event_id) upsert).
+func (s *Store) RateRetrieval(ctx context.Context, eventID int64, verdict int, comment string) error {
+	if verdict != 1 && verdict != -1 {
+		return fmt.Errorf("verdict must be +1 or -1, got %d", verdict)
+	}
+	var (
+		memID    sql.NullInt64
+		project  string
+		metaJSON sql.NullString
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT memory_id, project_id, metadata_json FROM memory_events WHERE id = ? AND kind = ?`,
+		eventID, string(EventRecalled)).Scan(&memID, &project, &metaJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotRecallEvent
+	}
+	if err != nil {
+		return err
+	}
+	var query string
+	if metaJSON.Valid {
+		var meta recallMeta
+		if json.Unmarshal([]byte(metaJSON.String), &meta) == nil {
+			query = meta.Query
+		}
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO retrieval_ratings(event_id, memory_id, project_id, query, verdict, comment, rated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(event_id) DO UPDATE SET verdict = excluded.verdict, comment = excluded.comment, rated_at = excluded.rated_at`,
+		eventID, memID, project, query, verdict, comment, time.Now().Unix())
+	return err
 }
 
 // SessionMessage is one stored conversation turn awaiting dreaming.
