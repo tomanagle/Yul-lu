@@ -1,63 +1,131 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap");
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 /*
- * Yul'lu - night indigo + dream violet on dark.
+ * Yul'lu theme — refined "glass-panel" fintech dashboard.
  *
- * Palette source: ui-ux-pro-max "Sleep Tracker" - picked deliberately to
- * lean into the dolphin/dream/memory metaphor (Yul'lu is the Butchella
- * word for bottlenose dolphins). Indigo carries the night/dream weight;
- * violet is the accent that catches the eye without going neon.
+ * Two complete palettes, switched purely by the OS setting via
+ * `prefers-color-scheme` (no toggle, no JS): light lives on :root, dark
+ * overrides it in the media query below. Tailwind's darkMode is set to
+ * "media" so any `dark:` utilities track the same signal.
  *
- * All tokens are HSL so shadcn/ui's existing `hsl(var(--x))` references
- * pick them up without changes. Dark-only - there's no light theme yet,
- * and the design system the palette comes from is explicitly Dark Mode OLED.
+ * Everything is HSL triplets so shadcn's `hsl(var(--x))` references resolve
+ * unchanged, and the chart layer reads the same vars at runtime (see
+ * useThemeTokens) so Recharts re-colours on a system theme flip.
+ *
+ * Accent language: one vivid blue primary, with teal / violet / amber /
+ * cyan / rose reserved for chart series.
  */
 @layer base {
   :root {
-    /* Surfaces - deep navy with a touch of indigo at higher elevations */
-    --background: 222 47% 11%; /* #0F172A */
-    --foreground: 210 40% 96%; /* #F1F5F9 - high-contrast slate */
-    --card: 222 35% 15%; /* #192134 */
-    --card-foreground: 210 40% 96%;
-    --popover: 222 35% 15%;
-    --popover-foreground: 210 40% 96%;
+    color-scheme: light;
 
-    /* Primary = indigo (the night). Use for active states + key brand surfaces. */
-    --primary: 244 76% 51%; /* #4338CA */
-    --primary-foreground: 210 40% 98%;
+    /* Surfaces — cool off-white, cards float on top in pure white. */
+    --background: 215 32% 96%;
+    --foreground: 222 47% 12%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 12%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 12%;
 
-    /* Secondary = muted indigo surface for chips, secondary buttons */
-    --secondary: 232 28% 22%;
-    --secondary-foreground: 210 40% 96%;
+    /* Primary = the blue that defines the whole look. */
+    --primary: 217 91% 53%;
+    --primary-foreground: 0 0% 100%;
 
-    /* Muted = barely-visible purple tint, used for hover / inset surfaces */
-    --muted: 232 49% 14%; /* #131936 */
-    --muted-foreground: 215 20% 65%; /* #94A3B8 - slate-400 */
+    /* Secondary / muted = quiet gray surfaces for chips + insets. */
+    --secondary: 215 26% 92%;
+    --secondary-foreground: 222 30% 24%;
+    --muted: 215 28% 94%;
+    --muted-foreground: 220 12% 44%;
 
-    /* Accent = dream violet. Reserve for highlights, recall-counts, halos. */
-    --accent: 263 84% 58%; /* #7C3AED */
-    --accent-foreground: 210 40% 98%;
+    /* Accent = violet, the "dream" highlight (recall counts, halos). */
+    --accent: 263 80% 60%;
+    --accent-foreground: 0 0% 100%;
 
-    /* Destructive - kept the warm red */
-    --destructive: 0 73% 50%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
 
-    /* Borders / inputs - very low opacity over the dark surfaces */
-    --border: 232 18% 24%;
-    --input: 232 18% 24%;
+    --border: 218 22% 88%;
+    --input: 218 22% 88%;
+    --ring: 217 91% 53%;
 
-    /* Focus ring uses primary indigo so the glow reads as "live" */
-    --ring: 244 76% 51%;
+    --radius: 1rem;
 
-    --radius: 0.625rem;
+    /* Chart palette — shared hues; grid/axis/tooltip differ per mode. */
+    --chart-1: 217 91% 55%; /* blue   */
+    --chart-2: 178 70% 41%; /* teal   */
+    --chart-3: 263 80% 62%; /* violet */
+    --chart-4: 38 92% 52%; /* amber  */
+    --chart-5: 190 85% 46%; /* cyan   */
+    --chart-6: 350 80% 60%; /* rose   */
+    --chart-grid: 218 24% 90%;
+    --chart-axis: 220 10% 46%;
+    --chart-tooltip-bg: 0 0% 100%;
+    --chart-tooltip-border: 218 22% 86%;
 
-    /* Glow used by focus rings + the active sidebar accent. Soft, low spread. */
-    --glow-indigo: 0 0 0 1px hsl(244 76% 51% / 0.5), 0 0 18px -2px hsl(244 76% 51% / 0.35);
-    --glow-violet: 0 0 0 1px hsl(263 84% 58% / 0.4), 0 0 24px -4px hsl(263 84% 58% / 0.35);
+    /* Soft, layered card elevation — visible on light, subtle on dark. */
+    --shadow-card: 0 1px 2px hsl(220 40% 20% / 0.06), 0 10px 30px -14px hsl(220 40% 25% / 0.18);
+    --glow-primary: 0 0 0 1px hsl(217 91% 53% / 0.45), 0 0 22px -4px hsl(217 91% 53% / 0.3);
+    --glow-accent: 0 0 0 1px hsl(263 80% 60% / 0.4), 0 0 24px -4px hsl(263 80% 60% / 0.3);
+
+    /* Ambient body wash. */
+    --body-wash:
+      radial-gradient(55rem 26rem at 50% -12rem, hsl(217 91% 55% / 0.1), transparent 60%),
+      radial-gradient(40rem 26rem at 92% -4rem, hsl(263 80% 60% / 0.06), transparent 70%);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+
+      /* Near-black navy. Cards sit one step up with a hairline border. */
+      --background: 222 47% 5%;
+      --foreground: 210 40% 96%;
+      --card: 222 40% 9%;
+      --card-foreground: 210 40% 96%;
+      --popover: 222 42% 11%;
+      --popover-foreground: 210 40% 96%;
+
+      --primary: 217 91% 60%;
+      --primary-foreground: 222 47% 8%;
+
+      --secondary: 222 24% 15%;
+      --secondary-foreground: 210 40% 92%;
+      --muted: 222 28% 12%;
+      --muted-foreground: 215 18% 62%;
+
+      --accent: 263 84% 67%;
+      --accent-foreground: 222 47% 8%;
+
+      --destructive: 0 72% 55%;
+      --destructive-foreground: 210 40% 98%;
+
+      --border: 222 18% 16%;
+      --input: 222 18% 16%;
+      --ring: 217 91% 60%;
+
+      --chart-1: 217 91% 62%;
+      --chart-2: 178 72% 48%;
+      --chart-3: 263 84% 70%;
+      --chart-4: 38 92% 58%;
+      --chart-5: 190 88% 55%;
+      --chart-6: 350 85% 68%;
+      --chart-grid: 222 18% 15%;
+      --chart-axis: 215 16% 56%;
+      --chart-tooltip-bg: 222 42% 11%;
+      --chart-tooltip-border: 222 18% 20%;
+
+      --shadow-card: 0 1px 2px hsl(222 60% 2% / 0.5), 0 16px 40px -20px hsl(222 60% 2% / 0.8);
+      --glow-primary: 0 0 0 1px hsl(217 91% 60% / 0.5), 0 0 24px -2px hsl(217 91% 60% / 0.35);
+      --glow-accent: 0 0 0 1px hsl(263 84% 67% / 0.45), 0 0 26px -4px hsl(263 84% 67% / 0.35);
+
+      --body-wash:
+        radial-gradient(58rem 28rem at 50% -14rem, hsl(217 91% 55% / 0.16), transparent 62%),
+        radial-gradient(42rem 28rem at 92% -4rem, hsl(263 84% 60% / 0.1), transparent 72%);
+    }
   }
 
   html {
@@ -73,60 +141,71 @@
   body {
     @apply bg-background text-foreground antialiased;
     font-family:
-      "Inter",
+      "Plus Jakarta Sans",
       -apple-system,
       BlinkMacSystemFont,
       "Segoe UI",
-      Roboto,
       sans-serif;
-    font-feature-settings: "cv11", "ss01", "ss03";
-    /*
-     * Ambient gradient: a very subtle indigo-violet glow that sits behind the
-     * whole app, brightest near the top-center and fading to nothing by the
-     * fold. It's the only "mystical" flourish - anything more would tip into
-     * kitsch. Pure radial-gradients on a fixed background are cheap (no
-     * paint cost beyond first layout).
-     */
-    background-image:
-      radial-gradient(60rem 30rem at 50% -10rem, hsl(244 76% 51% / 0.18), transparent 60%),
-      radial-gradient(40rem 30rem at 90% 0, hsl(263 84% 58% / 0.1), transparent 70%);
+    font-feature-settings: "ss01", "cv01";
+    background-image: var(--body-wash);
     background-attachment: fixed;
   }
 
-  /* Disciplined type rhythm - sizes mirror the "Modern Dark Cinema" Inter
-     system: tighter tracking on larger sizes, looser on labels. */
+  /* Display face — Sora — carries headings, KPI numbers, the page title. */
+  h1,
+  h2,
+  h3,
+  h4,
+  .yullu-display {
+    font-family: "Sora", "Plus Jakarta Sans", sans-serif;
+  }
   h1,
   h2,
   h3,
   h4 {
     font-weight: 600;
-    letter-spacing: -0.015em;
+    letter-spacing: -0.02em;
   }
   .yullu-display {
     font-weight: 700;
-    letter-spacing: -0.025em;
+    letter-spacing: -0.03em;
     font-variant-numeric: tabular-nums;
   }
   .yullu-label {
-    font-weight: 500;
-    letter-spacing: 0.08em;
+    font-weight: 600;
+    letter-spacing: 0.07em;
     text-transform: uppercase;
     font-size: 0.6875rem;
   }
-  /* Tabular numerals on stat numbers so digit changes don't shift layout. */
   .yullu-tabular {
     font-variant-numeric: tabular-nums;
   }
 }
 
+@layer components {
+  /* The signature surface: rounded, hairline-bordered, softly elevated.
+     Used by the Card primitive and any bespoke panel that wants the look. */
+  .yullu-panel {
+    @apply rounded-2xl border bg-card text-card-foreground;
+    box-shadow: var(--shadow-card);
+  }
+}
+
 @layer utilities {
+  .yullu-ring-primary {
+    box-shadow: var(--glow-primary);
+  }
+  .yullu-ring-accent {
+    box-shadow: var(--glow-accent);
+  }
+  /* Back-compat aliases — older components reference the indigo/violet names. */
   .yullu-ring-indigo {
-    box-shadow: var(--glow-indigo);
+    box-shadow: var(--glow-primary);
   }
   .yullu-ring-violet {
-    box-shadow: var(--glow-violet);
+    box-shadow: var(--glow-accent);
   }
-  /* Used on the active sidebar item - a slim violet bar pinned to the left. */
+  /* Slim accent bar on the active sidebar item. */
   .yullu-active-rail::before {
     content: "";
     position: absolute;
@@ -135,7 +214,7 @@
     bottom: 6px;
     width: 2px;
     border-radius: 2px;
-    background: hsl(var(--accent));
-    box-shadow: 0 0 12px hsl(var(--accent) / 0.6);
+    background: hsl(var(--primary));
+    box-shadow: 0 0 12px hsl(var(--primary) / 0.7);
   }
 }

@@ -204,17 +204,26 @@ function NavItem({ entry, collapsed }: { entry: NavEntry; collapsed: boolean }) 
       to={entry.to}
       title={collapsed ? entry.label : undefined}
       className={cn(
-        "group relative flex items-center gap-3 rounded-md px-3 py-2  text-muted-foreground",
-        "transition-all duration-200 ease-out",
-        "hover:bg-primary/10 hover:text-foreground",
+        "group relative flex items-center gap-3 rounded-xl py-1 text-sm font-medium text-muted-foreground",
+        "transition-colors duration-200 ease-out hover:text-foreground",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-0",
-        collapsed && "justify-center px-0",
+        collapsed ? "justify-center px-0" : "px-1",
       )}
-      activeProps={{
-        className: "yullu-active-rail bg-primary/15 text-foreground",
-      }}
+      activeProps={{ className: "is-active text-foreground" }}
     >
-      <entry.icon className="h-4 w-4 shrink-0 transition-colors group-hover:text-violet-soft" />
+      {/* Circular icon chip — fills with the primary colour when active,
+          echoing the reference's icon rail. The `group-[.is-active]`
+          arbitrary variant keys off the class Router adds to this Link. */}
+      <span
+        className={cn(
+          "grid h-9 w-9 shrink-0 place-items-center rounded-full border border-border/70 bg-card/50",
+          "transition-all duration-200",
+          "group-hover:border-primary/40 group-hover:text-primary",
+          "group-[.is-active]:border-transparent group-[.is-active]:bg-primary group-[.is-active]:text-primary-foreground group-[.is-active]:yullu-ring-primary",
+        )}
+      >
+        <entry.icon className="h-4 w-4" />
+      </span>
       {!collapsed && <span className="truncate">{entry.label}</span>}
     </Link>
   );

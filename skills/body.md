@@ -1,6 +1,6 @@
 # Yul'lu - codebase memory
 
-Yul'lu (https://yullu.ai) gives you persistent, semantically-searchable
+Yul'lu gives you persistent, semantically-searchable
 memory scoped to the current codebase. Conversations in this repo write to
 and read from a shared memory store; if team sync is enabled, your teammates'
 memories are available too.

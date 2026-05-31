@@ -3,6 +3,9 @@
 Persistent, semantically-searchable memory for LLMs - scoped per codebase,
 syncable across a team via a `.yullu/` directory committed to the repo.
 
+<img src="assets/cap.jpeg" alt="Yul'lu capture" width="100%" />
+
+
 > **Distribution status:** Yul'lu is pre-release. The only supported way
 > to install right now is to clone this repo and build from source. No
 > Homebrew tap, npm package, or pre-built binaries yet. The CLI subcommand

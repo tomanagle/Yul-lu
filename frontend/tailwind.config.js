@@ -2,7 +2,9 @@ import animate from "tailwindcss-animate";
 
 /** @type {import('tailwindcss').Config} */
 export default {
-  darkMode: ["class"],
+  // Follow the OS setting (prefers-color-scheme) — the same signal the CSS
+  // token sets in index.css switch on. No class toggling, no JS.
+  darkMode: "media",
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
     container: {
@@ -13,13 +15,17 @@ export default {
     extend: {
       fontFamily: {
         sans: [
-          "Inter",
+          '"Plus Jakarta Sans"',
           "-apple-system",
           "BlinkMacSystemFont",
           '"Segoe UI"',
-          "Roboto",
           "sans-serif",
         ],
+        // Display face for headings / KPI numbers / the page title.
+        display: ['"Sora"', '"Plus Jakarta Sans"', "sans-serif"],
+      },
+      boxShadow: {
+        card: "var(--shadow-card)",
       },
       colors: {
         border: "hsl(var(--border))",
@@ -27,15 +33,24 @@ export default {
         ring: "hsl(var(--ring))",
         background: "hsl(var(--background))",
         foreground: "hsl(var(--foreground))",
-        // Brand glow accents - used directly when shadcn's primary/accent
-        // tokens are the wrong fit (e.g. inline SVG strokes, chart fills).
+        // Chart series + brand accents. Token-driven so they re-colour on a
+        // light/dark system flip; `indigo`/`violet` aliases kept for the
+        // components that reference them by name.
+        chart: {
+          1: "hsl(var(--chart-1))",
+          2: "hsl(var(--chart-2))",
+          3: "hsl(var(--chart-3))",
+          4: "hsl(var(--chart-4))",
+          5: "hsl(var(--chart-5))",
+          6: "hsl(var(--chart-6))",
+        },
         indigo: {
-          DEFAULT: "#4338CA",
-          soft: "#6366F1",
+          DEFAULT: "hsl(var(--primary))",
+          soft: "hsl(var(--chart-1))",
         },
         violet: {
-          DEFAULT: "#7C3AED",
-          soft: "#A78BFA",
+          DEFAULT: "hsl(var(--accent))",
+          soft: "hsl(var(--chart-3))",
         },
         primary: {
           DEFAULT: "hsl(var(--primary))",

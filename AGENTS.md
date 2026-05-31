@@ -26,7 +26,7 @@ repo.
 `Yul'lu` is the **display** spelling (with apostrophe). `yullu` is the
 **identifier** — used everywhere an apostrophe can't survive: binary
 name, Go module path (`github.com/tomanagle/yullu`), env vars (`YULLU_*`),
-file paths (`~/.local/share/yullu/`, `.yullu/`), domain (`yullu.ai`),
+file paths (`~/.local/share/yullu/`, `.yullu/`),
 MCP server name. **Don't say `memorable-mcp`** — that was the pre-rename
 name and any reference to it is stale.
 
