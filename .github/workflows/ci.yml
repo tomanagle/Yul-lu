@@ -1,7 +1,7 @@
-# CI runs on every PR that targets master. Two independent jobs so a Go
-# vet failure doesn't mask a lint failure (and vice versa). Anything that
-# can be auto-fixed locally via lefthook should fail here — that's the
-# point of the dual setup.
+# CI runs on every PR that targets main. Independent jobs (frontend lint/fmt,
+# go vet, go test) run in parallel so one failure doesn't mask another, and
+# vet/test surface their results separately. Anything that can be auto-fixed
+# locally via lefthook should fail here — that's the point of the split setup.
 
 name: CI
 
@@ -45,7 +45,7 @@ jobs:
         # `bun run fmt` (or `lefthook run pre-commit`) fixes it.
         run: bun run fmt:check
 
-  go:
+  go-vet:
     name: Go vet
     runs-on: ubuntu-latest
     steps:
@@ -57,14 +57,26 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # The Go binary uses //go:embed all:frontend/dist, so vet/test need
-      # the directory to exist (contents don't matter, just presence).
-      # `make vet` and `make test` both depend on `ensure-dist`, which
-      # writes a placeholder.
+      # The Go binary uses //go:embed all:frontend/dist, so vet needs the
+      # directory to exist (contents don't matter, just presence). `make vet`
+      # depends on `ensure-dist`, which writes a placeholder.
       - name: go vet
         run: make vet
 
-      # Run the full Go test suite. Vet first so a syntax error fails
-      # fast and the test output isn't drowned out by vet errors.
+  go-test:
+    name: Go test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The Go binary uses //go:embed all:frontend/dist, so test needs the
+      # directory to exist (contents don't matter, just presence). `make test`
+      # depends on `ensure-dist`, which writes a placeholder.
       - name: go test
         run: make test
