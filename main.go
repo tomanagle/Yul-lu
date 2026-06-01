@@ -116,7 +116,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              httpAddr,
-		Handler:           mux,
+		Handler:           withRequestLogging(mux, app.logger),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
