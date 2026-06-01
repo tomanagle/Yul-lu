@@ -1423,6 +1423,50 @@ func (s *Store) SearchPreview(ctx context.Context, projectID string, query []flo
 	return cands, nil
 }
 
+// HasMemories reports whether projectID has at least one stored memory. A
+// cheap index seek (idx_memories_project) used to short-circuit the recall
+// path: if there's nothing to match, skip the embedding round-trip entirely.
+// An empty projectID checks the whole store.
+func (s *Store) HasMemories(ctx context.Context, projectID string) (bool, error) {
+	q := `SELECT EXISTS(SELECT 1 FROM memories WHERE project_id = ?)`
+	args := []any{projectID}
+	if projectID == "" {
+		q = `SELECT EXISTS(SELECT 1 FROM memories)`
+		args = nil
+	}
+	var exists int
+	if err := s.db.QueryRowContext(ctx, q, args...).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists == 1, nil
+}
+
+// trivialQueries are bare conversational acks/fillers that carry no recall
+// signal. A deliberate denylist — NOT a length rule — so meaningful short
+// queries ("deploy", "fix the login bug") still recall.
+var trivialQueries = map[string]bool{
+	"ok": true, "okay": true, "k": true, "kk": true,
+	"thanks": true, "thank you": true, "thx": true, "ty": true,
+	"yes": true, "yep": true, "yeah": true, "y": true,
+	"no": true, "nope": true, "n": true,
+	"sure": true, "continue": true, "go on": true, "go ahead": true,
+	"next": true, "do it": true, "please": true, "proceed": true,
+}
+
+// IsTrivialQuery reports whether q is a bare ack/filler with no recall value.
+// Used to skip the embed round-trip on the per-prompt recall path. Matches
+// exactly after trimming, lowercasing, and stripping trailing punctuation —
+// these strings already recall nothing above the similarity floor, so
+// short-circuiting them only saves a wasted embedding call.
+func IsTrivialQuery(q string) bool {
+	s := strings.ToLower(strings.TrimSpace(q))
+	s = strings.TrimSpace(strings.TrimRight(s, ".!?,"))
+	if s == "" {
+		return true
+	}
+	return trivialQueries[s]
+}
+
 type scanner interface {
 	Scan(dest ...any) error
 }

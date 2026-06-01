@@ -22,7 +22,7 @@ func NewGetRetrievalsHandler(params GetRetrievalsHandlerParams) *GetRetrievalsHa
 func (h *GetRetrievalsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	projectID := q.Get("project_id")
-	limit := atoiDefault(q.Get("limit"), 100)
+	limit := atoiDefault(q.Get("limit"), 50)
 	events, err := h.retrievals.ListRetrievals(r.Context(), projectID, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)

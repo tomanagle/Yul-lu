@@ -569,6 +569,15 @@ func (a *App) RecallMemories(ctx context.Context, projectID, query string, categ
 	if strings.TrimSpace(query) == "" {
 		return nil, nil
 	}
+	// Early exits — skip the embedding round-trip (the cost on this hot,
+	// per-prompt path) when recall can't help: a bare ack/filler query, or a
+	// project with no memories yet to match against.
+	if store.IsTrivialQuery(query) {
+		return nil, nil
+	}
+	if has, err := snap.store.HasMemories(ctx, projectID); err == nil && !has {
+		return nil, nil
+	}
 	if limit <= 0 {
 		limit = 5
 	}

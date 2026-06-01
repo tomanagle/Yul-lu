@@ -506,6 +506,15 @@ func (s *Server) handleRetrieve(ctx context.Context, req mcp.CallToolRequest) (*
 		return mcp.NewToolResultErrorFromErr("resolve project", err), nil
 	}
 
+	// Skip the embed round-trip when recall can't help: a bare ack/filler
+	// query, or a project with no memories to match against.
+	if store.IsTrivialQuery(query) {
+		return jsonResult(map[string]any{"project_id": projectID, "results": []store.Memory{}})
+	}
+	if has, err := s.store.HasMemories(ctx, projectID); err == nil && !has {
+		return jsonResult(map[string]any{"project_id": projectID, "results": []store.Memory{}})
+	}
+
 	vecs, err := s.embedder.Embed(ctx, []string{query})
 	if err != nil {
 		return mcp.NewToolResultErrorFromErr("embed", err), nil

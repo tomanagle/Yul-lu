@@ -280,3 +280,45 @@ func TestRetrievalAnalyticsGrouping(t *testing.T) {
 		t.Fatalf("id2 should be present and flagged dropped (not injected): %+v", gf.Memories)
 	}
 }
+
+func TestHasMemories(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Open(filepath.Join(dir, "he.db"), "stub:test", 4)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+
+	if has, err := st.HasMemories(ctx, "/p"); err != nil || has {
+		t.Fatalf("empty project should report no memories: got %v, %v", has, err)
+	}
+	if _, err := st.Insert(ctx, "", "/p", "a memory", nil, []float32{1, 0, 0, 0}, ""); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if has, err := st.HasMemories(ctx, "/p"); err != nil || !has {
+		t.Fatalf("after insert should report memories: got %v, %v", has, err)
+	}
+	if has, _ := st.HasMemories(ctx, "/other"); has {
+		t.Fatalf("a different project should still be empty")
+	}
+	if has, _ := st.HasMemories(ctx, ""); !has {
+		t.Fatalf("empty projectID should see the inserted memory (whole store)")
+	}
+}
+
+func TestIsTrivialQuery(t *testing.T) {
+	trivial := []string{"ok", "OK", " thanks! ", "thank you", "yes", "y", "continue", "do it", "go on", "proceed.", ""}
+	for _, q := range trivial {
+		if !IsTrivialQuery(q) {
+			t.Fatalf("expected trivial (should skip recall): %q", q)
+		}
+	}
+	// Meaningful queries — including short ones — must NOT be skipped.
+	meaningful := []string{"deploy", "auth flow", "fix the login bug", "how does retrieval work", "okay so wire up the thing"}
+	for _, q := range meaningful {
+		if IsTrivialQuery(q) {
+			t.Fatalf("expected NOT trivial (should recall): %q", q)
+		}
+	}
+}

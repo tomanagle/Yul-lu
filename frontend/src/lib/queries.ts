@@ -356,7 +356,7 @@ export function useRateMemory(projectID: string) {
 export function useRetrievals(projectID: string) {
   return useQuery({
     queryKey: qk.retrievals(projectID),
-    queryFn: () => GetRetrievals(projectID, 200),
+    queryFn: () => GetRetrievals(projectID, 50),
     enabled: !!projectID,
     staleTime: 0,
     refetchInterval: POLL_SLOW,

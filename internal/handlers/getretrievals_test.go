@@ -44,7 +44,7 @@ func TestGetRetrievalsHandler(t *testing.T) {
 			expectedStatus:   http.StatusOK,
 			expectContains:   `"items"`,
 			expectGotProject: "p1",
-			expectGotLimit:   100, // default applied by atoiDefault
+			expectGotLimit:   50, // default applied by atoiDefault
 		},
 		{
 			name:           "store error surfaces as 500",
