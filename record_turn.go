@@ -16,11 +16,15 @@ import (
 // referenced transcript to extract the most recent user/assistant turn,
 // and POSTs the pair to the local yullu server at /api/messages.
 //
-// Failures are deliberately non-fatal (exit 1, never 2): Claude Code
-// treats exit-2 hooks as blocking and feeds stderr back to the model,
-// which would be wrong for telemetry. Anything that goes sideways here
-// (yullu not running, transcript unparseable, trivial turn) just logs to
-// stderr and exits 1 without disturbing the user's session.
+// Failures are deliberately silent — this is best-effort telemetry that
+// runs after EVERY turn, so it must never disturb the session. Anything
+// that goes sideways (yullu not running → connection refused, transcript
+// unparseable, trivial turn) logs to stderr (visible under `claude
+// --debug`) and exits 0. We never exit non-zero: Claude Code surfaces a
+// non-zero Stop hook as a "non-blocking" error in the user's transcript,
+// and exit 2 as a blocking error fed to the model — neither is appropriate
+// for telemetry. So if the server's down, the turn just isn't recorded and
+// the session carries on as if the hook weren't there.
 //
 // Hook payload shape (Claude Code docs):
 //
@@ -39,17 +43,17 @@ func runRecordTurn() int {
 	}
 	if err := json.NewDecoder(os.Stdin).Decode(&hookIn); err != nil {
 		fmt.Fprintln(os.Stderr, "yullu record-turn: read hook input:", err)
-		return 1
+		return 0
 	}
 	if hookIn.SessionID == "" || hookIn.TranscriptPath == "" {
 		fmt.Fprintln(os.Stderr, "yullu record-turn: missing session_id or transcript_path")
-		return 1
+		return 0
 	}
 
 	userText, assistantText, err := extractLastTurn(hookIn.TranscriptPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "yullu record-turn: extract turn:", err)
-		return 1
+		return 0
 	}
 	if !isWorthRecording(userText, assistantText) {
 		// Trivial turn (greeting, single-word ack, tool-only). Skip silently.
@@ -73,7 +77,7 @@ func runRecordTurn() int {
 		"http://localhost:47823/api/messages", bytes.NewReader(body))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "yullu record-turn: build request:", err)
-		return 1
+		return 0
 	}
 	req.Header.Set("Content-Type", "application/json")
 	// Short timeout — the hook runs in the user's response path. If yullu's
@@ -81,13 +85,15 @@ func runRecordTurn() int {
 	client := &http.Client{Timeout: 2 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "yullu record-turn: post:", err)
-		return 1
+		// Server unreachable (not running, or slow past the timeout). Expected
+		// whenever the desktop app is closed — skip silently, don't nag.
+		fmt.Fprintln(os.Stderr, "yullu record-turn: server unreachable, skipping turn:", err)
+		return 0
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		fmt.Fprintln(os.Stderr, "yullu record-turn: server returned", resp.Status)
-		return 1
+		return 0
 	}
 	return 0
 }
