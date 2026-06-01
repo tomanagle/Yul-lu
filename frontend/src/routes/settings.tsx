@@ -6,8 +6,11 @@ import {
   useSaveConfig,
   useSaveProjectOverrides,
 } from "@/lib/queries";
+import { Settings as SettingsIcon } from "lucide-react";
+
 import { useProjectScope } from "@/lib/project-scope";
 import type { ConfigView, ProjectOverridePayload } from "@/lib/schemas";
+import { PageLayout } from "@/components/page-layout";
 import { cn } from "@/lib/utils";
 
 // Model catalogs: keep in sync with internal/ai/pricing.go and registry.go.
@@ -77,7 +80,11 @@ export function SettingsPage() {
   }, [tab]);
 
   return (
-    <div className="mx-auto max-w-2xl space-y-4">
+    <PageLayout
+      icon={SettingsIcon}
+      title="Settings"
+      description="Global defaults plus per-project overrides for embedding, reasoning, sync, dreaming, and retrieval."
+    >
       <div className="inline-flex items-center gap-0.5 rounded-md border border-border/40 bg-card/40 p-0.5">
         <TabButton active={tab === "global"} onClick={() => setTab("global")}>
           Global
@@ -100,11 +107,11 @@ export function SettingsPage() {
       {tab === "global" && <GlobalSettings />}
       {tab === "project" && project && <ProjectSettings projectID={project} />}
       {tab === "project" && !project && (
-        <p className=" text-muted-foreground">
+        <p className="text-sm text-muted-foreground">
           Pick a project in the sidebar to edit its overrides.
         </p>
       )}
-    </div>
+    </PageLayout>
   );
 }
 

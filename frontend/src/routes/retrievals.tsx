@@ -5,12 +5,15 @@
 // the retrieval threshold ("is the right memory ranking high? is noise
 // getting in?"), grouped by query rather than one row per memory.
 
+import { Radar } from "lucide-react";
+
 import { useProjectScope } from "@/lib/project-scope";
 import { useRetrievals } from "@/lib/queries";
 import { relativeTime } from "@/lib/format";
 import type { RetrievalGroup, RetrievalMemory } from "@/lib/schemas";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
+import { PageLayout } from "@/components/page-layout";
 import { cn } from "@/lib/utils";
 
 export function RetrievalsPage() {
@@ -18,19 +21,11 @@ export function RetrievalsPage() {
   const { data, isLoading } = useRetrievals(project);
 
   return (
-    <div className="mx-auto max-w-3xl space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>Retrievals</CardTitle>
-          <CardDescription>
-            What the agent actually received. Each entry is one retrieve call — the query, and the
-            memories that cleared the similarity threshold and were sent back, in rank order. Use it
-            to tune the threshold in Settings: watch for noise getting in, or the right memory
-            ranking just below the cut.
-          </CardDescription>
-        </CardHeader>
-      </Card>
-
+    <PageLayout
+      icon={Radar}
+      title="Retrievals"
+      description="What the agent actually received. Each entry is one retrieve call — the query, and the memories that cleared the similarity threshold and were sent back, in rank order. Use it to tune the threshold in Settings: watch for noise getting in, or the right memory ranking just below the cut."
+    >
       {!project && (
         <Card>
           <CardContent className="py-8 text-center text-sm text-muted-foreground">
@@ -51,7 +46,7 @@ export function RetrievalsPage() {
         data?.map((g) => (
           <RetrievalGroupCard key={g.recall_id || `${g.query}-${g.at}`} group={g} />
         ))}
-    </div>
+    </PageLayout>
   );
 }
 

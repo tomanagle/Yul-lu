@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PageLayout } from "@/components/page-layout";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
@@ -35,14 +36,18 @@ export function DreamingPage() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl space-y-4">
+    <PageLayout
+      icon={Sparkles}
+      title="Dreaming"
+      description="Background extraction of durable memories from recorded conversations — the live buffer, the schedule, and the prompt the reasoner runs each pass."
+    >
       <DreamProgressCard />
       <NextPassCard />
       <BufferCard project={project} />
       <BufferedSessionsCard project={project} />
       <DreamPromptCard />
       <ScheduleCard />
-    </div>
+    </PageLayout>
   );
 }
 

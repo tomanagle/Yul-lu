@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { PageLayout } from "@/components/page-layout";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
@@ -80,7 +81,11 @@ export function MemoriesPage() {
   });
 
   return (
-    <div className="space-y-4">
+    <PageLayout
+      title="Memories"
+      description="Everything stored for this project, grouped by category. Search runs the same semantic retrieval the agent uses, ranked with match scores."
+      fullWidth
+    >
       <Toolbar
         filter={filter}
         onFilterChange={setFilter}
@@ -184,7 +189,7 @@ export function MemoriesPage() {
           </div>
         </>
       )}
-    </div>
+    </PageLayout>
   );
 }
 

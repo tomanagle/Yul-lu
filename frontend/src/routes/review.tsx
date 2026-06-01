@@ -16,7 +16,7 @@
 // 1–5 (we don't enforce; let the user be terse if they want).
 
 import { useState } from "react";
-import { ThumbsDown, ThumbsUp } from "lucide-react";
+import { ClipboardCheck, ThumbsDown, ThumbsUp } from "lucide-react";
 
 import { useProjectScope } from "@/lib/project-scope";
 import { useRateMemory, useUnratedMemories } from "@/lib/queries";
@@ -25,6 +25,7 @@ import type { Memory } from "@/lib/schemas";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageLayout } from "@/components/page-layout";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
@@ -33,22 +34,15 @@ export function ReviewPage() {
   const { data, isLoading } = useUnratedMemories(project);
 
   return (
-    <div className="mx-auto max-w-3xl space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>Review queue</CardTitle>
-          <CardDescription>
-            Rate memories on a 1–10 scale. 1–5 archives them as anti-examples for the next dream
-            pass (the comment is the "why"). 6–10 keeps them with the rating attached. Rated
-            memories drop out of this list; only un-rated ones surface here.
-          </CardDescription>
-        </CardHeader>
-      </Card>
-
-      {isLoading && <p className=" text-muted-foreground">Loading…</p>}
+    <PageLayout
+      icon={ClipboardCheck}
+      title="Review queue"
+      description='Rate memories on a 1–10 scale. 1–5 archives them as anti-examples for the next dream pass (the comment is the "why"). 6–10 keeps them with the rating attached. Rated memories drop out of this list; only un-rated ones surface here.'
+    >
+      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
       {!isLoading && (!data || data.length === 0) && (
         <Card>
-          <CardContent className="py-8 text-center  text-muted-foreground">
+          <CardContent className="py-8 text-center text-sm text-muted-foreground">
             Nothing to review - every memory in this project has been rated.
           </CardContent>
         </Card>
@@ -56,7 +50,7 @@ export function ReviewPage() {
       {data?.map((m) => (
         <ReviewRow key={m.id} memory={m} project={project} />
       ))}
-    </div>
+    </PageLayout>
   );
 }
 

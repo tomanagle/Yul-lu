@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowUpRight, Brain, Moon, RefreshCw, Sparkles } from "lucide-react";
+import { ArrowUpRight, Brain, LayoutDashboard, Moon, RefreshCw, Sparkles } from "lucide-react";
 
 import {
   useDreamPasses,
@@ -17,7 +17,6 @@ import {
   CompositionDonut,
   DayBars,
   MemoryEventsChart,
-  TrendArea,
   UsageByModelChart,
   UsageCostChart,
   type DonutSegment,
@@ -27,6 +26,7 @@ import { useThemeTokens } from "@/lib/use-theme-tokens";
 import { relativeTime, shortUUID } from "@/lib/format";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageLayout } from "@/components/page-layout";
 import { cn } from "@/lib/utils";
 
 // Date-range presets — the four windows cover ~all the questions a dashboard
@@ -86,11 +86,6 @@ export function StatsPage() {
 
   const stats = statsQuery.data;
   const events = eventsQuery.data ?? [];
-  // Hero trend: total lifecycle events per day.
-  const trend = events.map((d) => ({
-    ...d,
-    total: d.created + d.updated + d.deleted + d.recalled,
-  }));
 
   const donutSegments: DonutSegment[] = stats
     ? [
@@ -102,217 +97,215 @@ export function StatsPage() {
     : [];
 
   return (
-    <div className="space-y-6">
-      {/* Page header — bold display title + period pills, reference-style. */}
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="yullu-display text-3xl text-foreground sm:text-4xl">Dashboard</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Memory activity for <span className="text-foreground/80">{scopeLabel}</span>.
-          </p>
-        </div>
-        <RangeSelect value={days} onChange={setDays} />
-      </div>
-
+    <PageLayout
+      icon={LayoutDashboard}
+      title="Dashboard"
+      description={
+        <>
+          Memory activity for <span className="text-foreground/80">{scopeLabel}</span>.
+        </>
+      }
+      actions={<RangeSelect value={days} onChange={setDays} />}
+      fullWidth
+    >
       {!stats && <p className="text-sm text-muted-foreground">Loading…</p>}
 
       {stats && (
         <>
-          {/* Row 1: hero activity (wide) + composition donut. */}
-          <div className="grid gap-4 lg:grid-cols-3">
-            <Card className="lg:col-span-2">
+          {/* Overview — the headline numbers, at a glance. */}
+          <section className="space-y-3">
+            <SectionHeading>Overview</SectionHeading>
+            <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+              <KpiCard
+                label="Total memories"
+                value={stats.total_memories}
+                sub={`${stats.counts.created_week} created this week`}
+                icon={<Brain className="h-5 w-5" />}
+                tone="primary"
+              />
+              <KpiCard
+                label="Recalled today"
+                value={stats.counts.recalled_day}
+                sub={`${stats.counts.recalled_week} this week`}
+                icon={<Sparkles className="h-5 w-5" />}
+                tone="violet"
+              />
+              <KpiCard
+                label="Created today"
+                value={stats.counts.created_day}
+                sub={`${stats.counts.created_all} all time`}
+                icon={<ArrowUpRight className="h-5 w-5" />}
+                tone="teal"
+              />
+              <KpiCard
+                label="Dream passes"
+                value={dreamStatsQuery.data?.passes ?? 0}
+                sub={`${dreamStatsQuery.data?.ops_created ?? 0} memories made`}
+                icon={<Moon className="h-5 w-5" />}
+                tone="amber"
+              />
+            </div>
+          </section>
+
+          {/* Memory activity — what's created/recalled, over time and as a mix. */}
+          <section className="space-y-3">
+            <SectionHeading>Memory activity</SectionHeading>
+            <div className="grid gap-4 lg:grid-cols-3">
+              <Card className="lg:col-span-2">
+                <CardHeader className="pb-2">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <CardTitle className="text-base">Activity over time</CardTitle>
+                      <CardDescription>
+                        Daily lifecycle events · last {rangeLabel(days)}, stacked.
+                      </CardDescription>
+                    </div>
+                    {stats.counts.created_week > 0 && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary">
+                        <ArrowUpRight className="h-3.5 w-3.5" />+{stats.counts.created_week} this
+                        week
+                      </span>
+                    )}
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <MemoryEventsChart data={events} />
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Composition</CardTitle>
+                  <CardDescription>Lifecycle event mix, all time.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <CompositionDonut
+                    segments={donutSegments}
+                    centerValue={stats.total_memories.toLocaleString()}
+                    centerLabel="memories"
+                  />
+                  <ul className="mt-2 grid grid-cols-2 gap-1.5">
+                    {donutSegments.map((s) => (
+                      <li key={s.name} className="flex items-center gap-2 text-xs">
+                        <span
+                          className="h-2.5 w-2.5 shrink-0 rounded-full"
+                          style={{ background: s.color }}
+                        />
+                        <span className="text-muted-foreground">{s.name}</span>
+                        <span className="yullu-tabular ml-auto font-medium text-foreground">
+                          {s.value.toLocaleString()}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </CardContent>
+              </Card>
+            </div>
+
+            <div className="grid gap-4 lg:grid-cols-3">
+              <Card className="lg:col-span-2">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Top recalled</CardTitle>
+                  <CardDescription>
+                    Memories returned by retrieve_memories most often.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <TopRecalled rows={stats.top_recalled ?? []} />
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Recalls per day</CardTitle>
+                  <CardDescription>How often memories were retrieved.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <DayBars data={events} dataKey="recalled" />
+                </CardContent>
+              </Card>
+            </div>
+          </section>
+
+          {/* Dreaming — buffer + extraction activity, and the per-cycle log. */}
+          <section className="space-y-3">
+            <SectionHeading>Dreaming</SectionHeading>
+            <DreamingCard
+              range={rangeLabel(days)}
+              buffer={sessionQuery.data}
+              stats={dreamStatsQuery.data}
+            />
+            <DreamPassesCard passes={dreamPassesQuery.data ?? []} />
+          </section>
+
+          {/* Usage & cost — what the embedder/reasoner spent. */}
+          <section className="space-y-3">
+            <SectionHeading>Usage &amp; cost</SectionHeading>
+            <div className="grid gap-4 lg:grid-cols-3">
+              <Card className="lg:col-span-2">
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">Cost over time</CardTitle>
+                  <CardDescription>
+                    Daily cost in cents and call count · last {rangeLabel(days)}.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <UsageCostChart data={usageDayQuery.data ?? []} />
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-base">By provider/model</CardTitle>
+                  <CardDescription>Calls + cost · last {rangeLabel(days)}.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <UsageByModelChart data={usageSummaryQuery.data ?? []} />
+                </CardContent>
+              </Card>
+            </div>
+          </section>
+
+          {/* Graph — exploratory view of how memories connect. */}
+          <section className="space-y-3">
+            <SectionHeading>Graph</SectionHeading>
+            <Card className="overflow-hidden">
               <CardHeader className="pb-2">
-                <div className="flex items-start justify-between gap-3">
+                <div className="flex items-baseline justify-between gap-3">
                   <div>
-                    <CardTitle className="text-base">Memory activity</CardTitle>
+                    <CardTitle className="text-base">Memory graph</CardTitle>
                     <CardDescription>
-                      Lifecycle events per day · last {rangeLabel(days)}.
+                      Nodes are memories; edges connect by shared tag (faint) or embedding
+                      similarity. Larger node = more recalls.
                     </CardDescription>
                   </div>
-                  {stats.counts.created_week > 0 && (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary">
-                      <ArrowUpRight className="h-3.5 w-3.5" />+{stats.counts.created_week} this week
-                    </span>
-                  )}
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className="flex items-baseline gap-2">
-                  <span className="yullu-display text-4xl text-foreground">
-                    {stats.total_memories.toLocaleString()}
+                  <span className="shrink-0 text-xs text-muted-foreground">
+                    {graphDecorated.nodes.length} memories · {graphDecorated.links.length} edges
                   </span>
-                  <span className="text-sm text-muted-foreground">memories in store</span>
                 </div>
-                <div className="mt-3">
-                  <TrendArea data={trend} dataKey="total" />
+              </CardHeader>
+              <CardContent className="p-0">
+                <div className="h-[420px]">
+                  <MemoryGraphCanvas
+                    nodes={graphDecorated.nodes}
+                    links={graphDecorated.links}
+                    loading={graphQuery.isLoading}
+                    error={graphQuery.error ? String(graphQuery.error) : null}
+                  />
                 </div>
               </CardContent>
             </Card>
-
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Composition</CardTitle>
-                <CardDescription>Lifecycle event mix, all time.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <CompositionDonut
-                  segments={donutSegments}
-                  centerValue={stats.total_memories.toLocaleString()}
-                  centerLabel="memories"
-                />
-                <ul className="mt-2 grid grid-cols-2 gap-1.5">
-                  {donutSegments.map((s) => (
-                    <li key={s.name} className="flex items-center gap-2 text-xs">
-                      <span
-                        className="h-2.5 w-2.5 shrink-0 rounded-full"
-                        style={{ background: s.color }}
-                      />
-                      <span className="text-muted-foreground">{s.name}</span>
-                      <span className="yullu-tabular ml-auto font-medium text-foreground">
-                        {s.value.toLocaleString()}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* KPI tiles with circular icons. */}
-          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-            <KpiCard
-              label="Total memories"
-              value={stats.total_memories}
-              sub={`${stats.counts.created_week} created this week`}
-              icon={<Brain className="h-5 w-5" />}
-              tone="primary"
-            />
-            <KpiCard
-              label="Recalled today"
-              value={stats.counts.recalled_day}
-              sub={`${stats.counts.recalled_week} this week`}
-              icon={<Sparkles className="h-5 w-5" />}
-              tone="violet"
-            />
-            <KpiCard
-              label="Created today"
-              value={stats.counts.created_day}
-              sub={`${stats.counts.created_all} all time`}
-              icon={<ArrowUpRight className="h-5 w-5" />}
-              tone="teal"
-            />
-            <KpiCard
-              label="Dream passes"
-              value={dreamStatsQuery.data?.passes ?? 0}
-              sub={`${dreamStatsQuery.data?.ops_created ?? 0} memories made`}
-              icon={<Moon className="h-5 w-5" />}
-              tone="amber"
-            />
-          </div>
-
-          {/* Charts row: stacked events (wide) + recalls-by-day bars. */}
-          <div className="grid gap-4 lg:grid-cols-3">
-            <Card className="lg:col-span-2">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Memory events</CardTitle>
-                <CardDescription>
-                  Daily lifecycle counts · last {rangeLabel(days)}, stacked.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <MemoryEventsChart data={events} />
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Recalls per day</CardTitle>
-                <CardDescription>How often memories were retrieved.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <DayBars data={events} dataKey="recalled" />
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Dreaming summary. */}
-          <DreamingCard
-            range={rangeLabel(days)}
-            buffer={sessionQuery.data}
-            stats={dreamStatsQuery.data}
-          />
-
-          {/* Memory graph — full-width hero tile. */}
-          <Card className="overflow-hidden">
-            <CardHeader className="pb-2">
-              <div className="flex items-baseline justify-between gap-3">
-                <div>
-                  <CardTitle className="text-base">Memory graph</CardTitle>
-                  <CardDescription>
-                    Nodes are memories; edges connect by shared tag (faint) or embedding similarity.
-                    Larger node = more recalls.
-                  </CardDescription>
-                </div>
-                <span className="shrink-0 text-xs text-muted-foreground">
-                  {graphDecorated.nodes.length} memories · {graphDecorated.links.length} edges
-                </span>
-              </div>
-            </CardHeader>
-            <CardContent className="p-0">
-              <div className="h-[420px]">
-                <MemoryGraphCanvas
-                  nodes={graphDecorated.nodes}
-                  links={graphDecorated.links}
-                  loading={graphQuery.isLoading}
-                  error={graphQuery.error ? String(graphQuery.error) : null}
-                />
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Recalls + providers. */}
-          <div className="grid gap-4 lg:grid-cols-5">
-            <Card className="lg:col-span-3">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">Top recalled</CardTitle>
-                <CardDescription>
-                  Memories returned by retrieve_memories most often.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <TopRecalled rows={stats.top_recalled ?? []} />
-              </CardContent>
-            </Card>
-
-            <Card className="lg:col-span-2">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-base">By provider/model</CardTitle>
-                <CardDescription>Calls + cost · last {rangeLabel(days)}.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <UsageByModelChart data={usageSummaryQuery.data ?? []} />
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* LLM cost over time. */}
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-base">LLM usage</CardTitle>
-              <CardDescription>
-                Daily cost in cents and call count · last {rangeLabel(days)}.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <UsageCostChart data={usageDayQuery.data ?? []} />
-            </CardContent>
-          </Card>
-
-          <DreamPassesCard passes={dreamPassesQuery.data ?? []} />
+          </section>
         </>
       )}
-    </div>
+    </PageLayout>
   );
+}
+
+// SectionHeading labels each dashboard group so the page reads as organized
+// sections rather than a flat stack of cards.
+function SectionHeading({ children }: { children: React.ReactNode }) {
+  return <h2 className="yullu-label text-muted-foreground">{children}</h2>;
 }
 
 // KpiCard — label + big number + a sub-line, with a tinted circular icon on
