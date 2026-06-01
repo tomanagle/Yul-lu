@@ -123,9 +123,10 @@ func DefaultConfig() Config {
 			OnIdleSeconds:   0,
 		},
 		Retrieval: RetrievalConfig{
-			// Off by default — preserve the pre-threshold behaviour (always
-			// return the top-k) until the user opts in via Settings.
-			MinSimilarity: 0,
+			// 60% floor by default — drop weak matches so an unrelated prompt
+			// pulls nothing instead of padding with noise. Set to 0 to
+			// disable the floor (always return the top-k).
+			MinSimilarity: 0.6,
 		},
 	}
 }
@@ -282,9 +283,9 @@ on_idle_seconds = 0
 
 [retrieval]
 # Cosine-similarity floor (0.0–1.0) a memory must clear to be returned by a
-# vector search. 0 disables the floor (always return the top matches). Raise
-# it to drop weak matches: e.g. 0.6 means "only inject memories that are at
-# least 60% similar to the query", so an unrelated prompt pulls nothing
-# instead of padding the result with noise.
-min_similarity = 0.0
+# vector search. Defaults to 0.6 — only inject memories at least 60% similar
+# to the query, so an unrelated prompt pulls nothing instead of padding the
+# result with noise. Set to 0 to disable the floor (always return the top
+# matches).
+min_similarity = 0.6
 `

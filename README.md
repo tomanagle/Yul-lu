@@ -149,10 +149,10 @@ on_idle_seconds = 0               # also dream after N idle seconds (0 = off)
 
 [retrieval]
 # Cosine-similarity floor (0.0-1.0) a memory must clear to be returned by a
-# vector search. 0 disables the floor (always return the top matches). Raise
-# it to drop weak matches so an unrelated query pulls nothing instead of
-# padding the result with noise. Set in the UI via Settings → Retrieval.
-min_similarity = 0.0
+# vector search. Defaults to 0.6 (60%) so an unrelated query pulls nothing
+# instead of padding the result with noise. Set to 0 to disable the floor
+# (always return the top matches). Tune in the UI via Settings → Retrieval.
+min_similarity = 0.6
 ```
 
 ### Environment variables
@@ -306,10 +306,10 @@ memory must clear it to be returned, so a query with no strong match
 returns fewer - or zero - memories instead of padding the result with
 weak ones. Stored and query vectors are unit-normalized, which is what
 makes the raw `sqlite-vec` L2 distance translate into a meaningful cosine
-percentage. Default is `0` (off); raise it globally or per-project under
-**Settings → Retrieval** (the per-project value lives in the team-shared
-`.yullu/config.toml`, so a noisy monorepo can carry a stricter floor than a
-focused one).
+percentage. Defaults to `0.6` (60%); set it to `0` to disable, or tune it
+globally or per-project under **Settings → Retrieval** (the per-project value
+lives in the team-shared `.yullu/config.toml`, so a noisy monorepo can carry a
+stricter floor than a focused one).
 
 **Relevance feedback.** Every recall is logged locally (the query, the
 matched memory, its similarity, and its rank). The **Retrievals** page in
