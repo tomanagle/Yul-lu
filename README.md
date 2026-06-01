@@ -17,8 +17,13 @@ syncable across a team via a `.yullu/` directory committed to the repo.
 **Requirements:**
 - **Go 1.25+** and a working **cgo** toolchain (Xcode CLT on macOS).
 - **Bun** for the frontend (`brew install oven-sh/bun/bun`, see <https://bun.sh>).
-- A **Voyage API key** for embeddings - paste it into the Settings page on
-  first launch (free tier at <https://voyageai.com>).
+- An **embeddings API key** — **Voyage** (default, code-aware, free tier at
+  <https://voyageai.com>) or **OpenAI**. Paste it into the Settings page on
+  first launch.
+- Reasoning (for dreaming) needs **no key by default** — it uses MCP sampling
+  through your AI client. Set a direct **Anthropic** or **OpenAI** key only if
+  you want background dreaming on a timer (see Reasoning below). Note:
+  embeddings can't use Anthropic — it has no embeddings API.
 
 ```bash
 git clone https://github.com/tomanagle/Yullu.git
