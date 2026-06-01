@@ -64,7 +64,12 @@ dev: air-install frontend-deps ensure-dist ## Hot-reload dev: vite (:47824) + ai
 	@echo ""
 	@bash -c 'trap "kill 0" EXIT; \
 		(cd $(FRONTEND_DIR) && bun run dev) & \
-		air -c .air.toml & \
+		if command -v jq >/dev/null 2>&1; then \
+			air -c .air.toml 2>&1 | jq -R -r --unbuffered "fromjson? // ." & \
+		else \
+			echo "[make dev] jq not found — server logs shown as raw JSON (brew install jq to pretty-print them)"; \
+			air -c .air.toml & \
+		fi; \
 		wait'
 
 # ensure-dist guarantees $(FRONTEND_DIST) exists so `go build` doesn't choke
