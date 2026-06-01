@@ -4,7 +4,9 @@ import "net/http"
 
 // GetMemoriesHandler serves both list-recent and search modes from one
 // endpoint, distinguished by the `q` query param. Empty q → newest-first
-// list. Non-empty q → BM25 full-text search.
+// list. Non-empty q → semantic vector search (the same retrieval the agent
+// uses), so results carry similarity/rank + an injected flag and a
+// natural-language query matches the way it does on the Retrievals page.
 type GetMemoriesHandler struct {
 	memory MemoryReader
 }
@@ -24,7 +26,7 @@ func (h *GetMemoriesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	query := q.Get("q")
 
 	if query != "" {
-		memories, err := h.memory.SearchText(r.Context(), projectID, query, limit)
+		memories, err := h.memory.SearchSemantic(r.Context(), projectID, query, limit)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err)
 			return

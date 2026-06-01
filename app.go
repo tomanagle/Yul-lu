@@ -129,7 +129,15 @@ func (a *App) openStore() {
 // terminal output.
 func (a *App) openStoreLocked() {
 	a.initError = ""
-	embedder, err := ai.BuildEmbedder(a.cfg, ai.NopRecorder())
+	// Route AI usage (embedding + reasoning token counts/cost) into the
+	// store's usage table. The store isn't open yet, so build the providers
+	// against a ref backed by a nop recorder and swap in the real store once
+	// it opens — same pattern as the stdio CLI. Previously this used
+	// NopRecorder outright, so the desktop server silently discarded every
+	// usage event: the usage table stayed empty even though an embed runs on
+	// every store_memory.
+	recRef := ai.NewRecorderRef()
+	embedder, err := ai.BuildEmbedder(a.cfg, recRef)
 	if err != nil {
 		a.logger.Warn("embedder unavailable", "err", err.Error())
 		a.initError = err.Error()
@@ -149,6 +157,9 @@ func (a *App) openStoreLocked() {
 		a.initError = err.Error()
 		return
 	}
+	// Store is open — point the usage recorder at it so every subsequent
+	// embed/reason call lands in the usage table.
+	recRef.Set(st)
 	a.store = st
 	a.embedder = embedder
 	a.logger.Info("store opened",
@@ -165,7 +176,7 @@ func (a *App) openStoreLocked() {
 		a.srv.StopScheduler()
 	}
 
-	reasoner, _ := ai.BuildReasoner(a.cfg, ai.NopRecorder())
+	reasoner, _ := ai.BuildReasoner(a.cfg, recRef)
 	a.srv = server.New(st, embedder, reasoner, a.cfg, a.logger)
 	// Inline what swapMCPHandler used to do — we already hold the lock.
 	a.mcpHandler = a.srv.MCPHandler()
@@ -358,9 +369,15 @@ func (a *App) List(ctx context.Context, projectID string, limit int) ([]store.Me
 	return snap.store.List(ctx, projectID, limit)
 }
 
-func (a *App) SearchText(ctx context.Context, projectID, query string, limit int) ([]store.Memory, error) {
+// SearchSemantic powers the Memories-page search box: the same vector search
+// the agent's retrieve_memories uses, returning the top-k candidates in rank
+// order, each flagged whether it would have been injected (i.e. cleared the
+// per-project similarity floor). Empty query → newest-first list. Records
+// nothing — this is browsing, not a retrieval, so it must not touch the recall
+// analytics or stats.
+func (a *App) SearchSemantic(ctx context.Context, projectID, query string, limit int) ([]store.Memory, error) {
 	snap := a.snapshot()
-	if snap.store == nil {
+	if snap.store == nil || snap.embedder == nil {
 		return nil, fmt.Errorf("store not open - finish setup first")
 	}
 	if limit <= 0 {
@@ -369,7 +386,18 @@ func (a *App) SearchText(ctx context.Context, projectID, query string, limit int
 	if strings.TrimSpace(query) == "" {
 		return snap.store.List(ctx, projectID, limit)
 	}
-	return snap.store.SearchText(ctx, projectID, query, limit)
+	vecs, err := snap.embedder.Embed(ctx, []string{query})
+	if err != nil {
+		return nil, fmt.Errorf("embed: %w", err)
+	}
+	if len(vecs) != 1 {
+		return nil, fmt.Errorf("embedder returned %d vectors, expected 1", len(vecs))
+	}
+	var minSim float64
+	if snap.srv != nil {
+		minSim = snap.srv.RetrievalMinSimilarity(projectID)
+	}
+	return snap.store.SearchPreview(ctx, projectID, vecs[0], limit, nil, minSim)
 }
 
 // ---------- MemoryEditor ----------
@@ -590,23 +618,14 @@ func (a *App) RateMemory(ctx context.Context, id int64, rating int, comment stri
 
 // ---------- RetrievalAnalytics ----------
 
-// ListRetrievals returns recent recall events (with the memory they
-// returned + any verdict) for the Retrievals review surface.
-func (a *App) ListRetrievals(ctx context.Context, projectID string, limit int) ([]store.RetrievalEvent, error) {
+// ListRetrievals returns recent recalls grouped by query (the memories sent
+// to the agent for each retrieve call) for the Retrievals surface.
+func (a *App) ListRetrievals(ctx context.Context, projectID string, limit int) ([]store.RetrievalGroup, error) {
 	snap := a.snapshot()
 	if snap.store == nil {
 		return nil, fmt.Errorf("store not open")
 	}
 	return snap.store.ListRetrievals(ctx, projectID, limit)
-}
-
-// RateRetrieval records a developer's +1/-1 verdict on a single recall.
-func (a *App) RateRetrieval(ctx context.Context, eventID int64, verdict int, comment string) error {
-	snap := a.snapshot()
-	if snap.store == nil {
-		return fmt.Errorf("store not open")
-	}
-	return snap.store.RateRetrieval(ctx, eventID, verdict, comment)
 }
 
 // ---------- MessageRecorder ----------

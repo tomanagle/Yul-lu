@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -186,7 +185,7 @@ func TestSearchSimilarityRankAndFloor(t *testing.T) {
 	}
 }
 
-func TestRetrievalAnalyticsRoundTrip(t *testing.T) {
+func TestRetrievalAnalyticsGrouping(t *testing.T) {
 	dir := t.TempDir()
 	st, err := Open(filepath.Join(dir, "ret.db"), "stub:test", 4)
 	if err != nil {
@@ -197,71 +196,87 @@ func TestRetrievalAnalyticsRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	const proj = "/p"
 
-	id, err := st.Insert(ctx, "", proj, "the auth memory", nil, []float32{1, 0, 0, 0}, "gotcha")
+	id1, err := st.Insert(ctx, "", proj, "the auth memory", nil, []float32{1, 0, 0, 0}, "gotcha")
 	if err != nil {
-		t.Fatalf("insert: %v", err)
+		t.Fatalf("insert 1: %v", err)
 	}
-	// A search records a recalled event carrying the query/similarity/rank.
+	// cos([1,0,0,0],[0.6,0.8,0,0]) = 0.6, so a 0.8 floor cleanly drops it.
+	id2, err := st.Insert(ctx, "", proj, "second memory", nil, []float32{0.6, 0.8, 0, 0}, "")
+	if err != nil {
+		t.Fatalf("insert 2: %v", err)
+	}
+
+	// (1) No floor: one retrieve call → one group, both memories injected,
+	// rank-ordered, each carrying the query/similarity from the event.
 	if _, err := st.Search(ctx, proj, []float32{1, 0, 0, 0}, "how does auth work", 5, nil, 0); err != nil {
 		t.Fatalf("search: %v", err)
 	}
-
-	events, err := st.ListRetrievals(ctx, proj, 10)
+	groups, err := st.ListRetrievals(ctx, proj, 10)
 	if err != nil {
 		t.Fatalf("list retrievals: %v", err)
 	}
-	if len(events) != 1 {
-		t.Fatalf("want 1 retrieval event, got %d", len(events))
+	if len(groups) != 1 {
+		t.Fatalf("one retrieve call should be one group, got %d", len(groups))
 	}
-	ev := events[0]
-	if ev.MemoryID != id {
-		t.Fatalf("event memory_id: want %d, got %d", id, ev.MemoryID)
+	g := groups[0]
+	if g.Query != "how does auth work" {
+		t.Fatalf("group query not decoded from metadata: %q", g.Query)
 	}
-	if ev.Query != "how does auth work" {
-		t.Fatalf("event query not decoded from metadata: %q", ev.Query)
+	if g.RecallID == "" {
+		t.Fatalf("group should carry a recall_id")
 	}
-	if ev.MemoryContent != "the auth memory" {
-		t.Fatalf("event memory content not joined: %q", ev.MemoryContent)
+	if len(g.Memories) != 2 {
+		t.Fatalf("want 2 memories in the group, got %d", len(g.Memories))
 	}
-	if ev.Rank != 1 {
-		t.Fatalf("event rank: want 1, got %d", ev.Rank)
+	if g.Memories[0].Rank != 1 || g.Memories[1].Rank != 2 {
+		t.Fatalf("memories not rank-ordered: %+v", g.Memories)
 	}
-	if ev.Similarity <= 0 {
-		t.Fatalf("event similarity should be > 0, got %f", ev.Similarity)
+	if g.Memories[0].MemoryID != id1 {
+		t.Fatalf("rank-1 should be the closest memory %d, got %d", id1, g.Memories[0].MemoryID)
 	}
-	if ev.Verdict != nil {
-		t.Fatalf("fresh recall should be unrated, got verdict %v", *ev.Verdict)
+	if g.Memories[0].Content != "the auth memory" {
+		t.Fatalf("memory content not joined: %q", g.Memories[0].Content)
 	}
-
-	// Rate it good, then confirm the verdict joins back in.
-	if err := st.RateRetrieval(ctx, ev.EventID, 1, "spot on"); err != nil {
-		t.Fatalf("rate retrieval: %v", err)
+	if g.Memories[0].Similarity <= 0 {
+		t.Fatalf("similarity should be > 0, got %f", g.Memories[0].Similarity)
 	}
-	events, _ = st.ListRetrievals(ctx, proj, 10)
-	if events[0].Verdict == nil || *events[0].Verdict != 1 {
-		t.Fatalf("verdict not recorded: %+v", events[0].Verdict)
-	}
-	if events[0].Comment != "spot on" {
-		t.Fatalf("comment not recorded: %q", events[0].Comment)
+	if !g.Memories[0].Injected || !g.Memories[1].Injected {
+		t.Fatalf("with no floor both candidates should be injected: %+v", g.Memories)
 	}
 
-	// Re-rating the same event upserts rather than duplicating.
-	if err := st.RateRetrieval(ctx, ev.EventID, -1, "actually irrelevant"); err != nil {
-		t.Fatalf("re-rate: %v", err)
+	// (2) A floor drops the weaker candidate. The agent only gets id1, but the
+	// dropped near-miss (id2) still appears in the group, flagged !Injected.
+	hits, err := st.Search(ctx, proj, []float32{1, 0, 0, 0}, "auth with floor", 5, nil, 0.8)
+	if err != nil {
+		t.Fatalf("search with floor: %v", err)
 	}
-	events, _ = st.ListRetrievals(ctx, proj, 10)
-	if len(events) != 1 {
-		t.Fatalf("re-rating must not add rows, got %d events", len(events))
+	if len(hits) != 1 || hits[0].ID != id1 {
+		t.Fatalf("floor 0.8 should return only id1 to the caller, got %+v", hits)
 	}
-	if events[0].Verdict == nil || *events[0].Verdict != -1 {
-		t.Fatalf("verdict not overwritten on re-rate: %+v", events[0].Verdict)
+	groups, _ = st.ListRetrievals(ctx, proj, 10)
+	if len(groups) != 2 {
+		t.Fatalf("two retrieve calls should yield two groups, got %d", len(groups))
 	}
-
-	// Invalid verdict and unknown event are rejected.
-	if err := st.RateRetrieval(ctx, ev.EventID, 0, ""); err == nil {
-		t.Fatalf("verdict 0 should be rejected")
+	gf := groups[0] // newest first
+	if gf.Query != "auth with floor" {
+		t.Fatalf("newest group should sort first, got %q", gf.Query)
 	}
-	if err := st.RateRetrieval(ctx, 999999, 1, ""); !errors.Is(err, ErrNotRecallEvent) {
-		t.Fatalf("rating an unknown event should return ErrNotRecallEvent, got %v", err)
+	if len(gf.Memories) != 2 {
+		t.Fatalf("group should record both candidates (injected + dropped), got %d", len(gf.Memories))
+	}
+	var inj, drop *RetrievalMemory
+	for i := range gf.Memories {
+		switch gf.Memories[i].MemoryID {
+		case id1:
+			inj = &gf.Memories[i]
+		case id2:
+			drop = &gf.Memories[i]
+		}
+	}
+	if inj == nil || !inj.Injected {
+		t.Fatalf("id1 should be present and injected: %+v", gf.Memories)
+	}
+	if drop == nil || drop.Injected {
+		t.Fatalf("id2 should be present and flagged dropped (not injected): %+v", gf.Memories)
 	}
 }

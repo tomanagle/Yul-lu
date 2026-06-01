@@ -3,6 +3,7 @@
 // updates live here.
 
 import {
+  keepPreviousData,
   useMutation,
   useQuery,
   useQueryClient,
@@ -30,7 +31,6 @@ import {
   ListMemories,
   ListProjects,
   RateMemory,
-  RateRetrieval,
   Retry,
   SaveConfig,
   SaveDreamPrompt,
@@ -73,8 +73,13 @@ export const qk = {
 
 // Polling cadences. Local SQLite queries via Wails are cheap (sub-ms), so we
 // can poll aggressively to make the UI feel realtime without much cost.
-const POLL_FAST = 2000; // memories list, dream buffer
-const POLL_SLOW = 5000; // project list (changes less often)
+// Polling cadences. These are background refreshes — the data also refetches
+// when you act on it (mutations invalidate) — so they can be lazy. Several
+// queries share each tier, so short intervals mean a burst of requests every
+// few seconds; keep them slow.
+const POLL_FAST = 10_000; // memories list, dream buffer — fairly live, not spammy
+const POLL_SLOW = 30_000; // dashboard aggregates (stats, usage, graph) — change slowly
+const POLL_IDLE = 30_000; // session-buffer counts — change rarely, fine to poll lazily
 
 export function useStatus() {
   return useQuery({ queryKey: qk.status, queryFn: () => Status() });
@@ -110,10 +115,15 @@ export function useMemories(projectID: string, query: string = "") {
     queryKey: qk.memories(projectID, trimmed),
     queryFn: () =>
       trimmed ? SearchMemories(projectID, trimmed, 100) : ListMemories(projectID, 100),
+    // Each keystroke changes the query key (the search term is part of it), so
+    // without this the list would blank to a loading state on every character.
+    // keepPreviousData holds the prior results on screen until the new ones
+    // arrive — `isPlaceholderData` flags the in-between so the UI can dim them.
+    placeholderData: keepPreviousData,
     // Local DB queries are cheap. Poll the unfiltered view often so new
-    // memories appear within a couple of seconds. Search results are
-    // stable per query, so disable polling there to avoid re-running the
-    // same FTS scan in a loop.
+    // memories appear within a couple of seconds. Search results are stable
+    // per query, so disable polling there to avoid re-running the same vector
+    // search in a loop.
     staleTime: 0,
     refetchInterval: trimmed ? false : POLL_FAST,
     refetchIntervalInBackground: false,
@@ -124,8 +134,8 @@ export function useSessionStats(projectID: string) {
   return useQuery({
     queryKey: qk.sessionStats(projectID),
     queryFn: () => GetSessionStats(projectID),
-    staleTime: 0,
-    refetchInterval: POLL_FAST,
+    staleTime: POLL_IDLE,
+    refetchInterval: POLL_IDLE,
     refetchIntervalInBackground: false,
   });
 }
@@ -307,7 +317,9 @@ export function useDreamProgress() {
     queryKey: qk.dreamProgress,
     queryFn: () => GetDreamProgress(),
     staleTime: 0,
-    refetchInterval: (q) => (q.state.data?.running ? 1000 : 5000),
+    // Tight (1s) only while a pass is actively running so the progress bar is
+    // live; otherwise idle-poll slowly — nothing's changing between passes.
+    refetchInterval: (q) => (q.state.data?.running ? 1000 : POLL_IDLE),
   });
 }
 
@@ -339,8 +351,8 @@ export function useRateMemory(projectID: string) {
   });
 }
 
-// useRetrievals powers the Retrievals review surface: recent recalls with
-// the query that pulled each memory, the match strength, and any verdict.
+// useRetrievals powers the Retrievals surface: recent retrieve calls grouped
+// by query, each with the memories that were sent to the agent.
 export function useRetrievals(projectID: string) {
   return useQuery({
     queryKey: qk.retrievals(projectID),
@@ -349,19 +361,6 @@ export function useRetrievals(projectID: string) {
     staleTime: 0,
     refetchInterval: POLL_SLOW,
     refetchIntervalInBackground: false,
-  });
-}
-
-// useRateRetrieval submits a +1/-1 relevance verdict on one recall. On
-// success we refetch the retrievals list so the just-rated row reflects its
-// new verdict inline.
-export function useRateRetrieval(projectID: string) {
-  const qc = useQueryClient();
-  return useMutation<unknown, Error, { eventID: number; verdict: 1 | -1; comment: string }>({
-    mutationFn: ({ eventID, verdict, comment }) => RateRetrieval(eventID, verdict, comment),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.retrievals(projectID) });
-    },
   });
 }
 

@@ -12,10 +12,12 @@ import "./index.css";
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      // Same-origin REST calls are fast; short stale times keep the UI
-      // responsive without hammering the backend.
       staleTime: 30 * 1000,
       retry: 1,
+      // Background interval polling already keeps data fresh, so don't ALSO
+      // refetch every query whenever the window regains focus — that turned
+      // every alt-tab / devtools click into a burst of requests.
+      refetchOnWindowFocus: false,
     },
   },
 });

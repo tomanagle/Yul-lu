@@ -10,6 +10,8 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -51,6 +53,11 @@ type Memory struct {
 	// (1 = closest). Populated only by Search so callers and the recall
 	// analytics can record where a memory landed without re-deriving order.
 	Rank int `json:"rank,omitempty"`
+	// Injected is set only by SearchPreview (the Memories-page search): true
+	// if this candidate cleared the similarity floor and would be sent to the
+	// agent, false for a near-miss. Pointer so the UI can tell "not a preview
+	// result" (nil) from an explicit false.
+	Injected *bool `json:"injected,omitempty"`
 	// Rating is the user-assigned quality score (1–10) for the review queue.
 	// Nil means un-rated. Memories rated ≤ 5 are moved to rejected_memories
 	// and removed from this table — so a non-nil Rating here is always ≥ 6.
@@ -315,25 +322,6 @@ func (s *Store) init(embedderID string) error {
 		`CREATE INDEX IF NOT EXISTS idx_memory_events_kind ON memory_events(kind, at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_events_memory ON memory_events(memory_id, at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_memory_events_project ON memory_events(project_id, at DESC)`,
-		// Developer feedback on retrieval *relevance* — keyed to a single
-		// recall (memory_events.id with kind='recalled'), NOT to the memory.
-		// "Was returning THIS memory for THIS query a good match?" is a
-		// different question from "is this memory any good" (that's the 1–10
-		// rating on memories). verdict is +1 (good) / -1 (bad). query is
-		// denormalized off the event metadata so a rating survives event
-		// pruning. UNIQUE(event_id) lets a developer change their mind via
-		// upsert. Local-only — never sync'd, like memory_events.
-		`CREATE TABLE IF NOT EXISTS retrieval_ratings (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			event_id INTEGER NOT NULL UNIQUE,
-			memory_id INTEGER,
-			project_id TEXT NOT NULL,
-			query TEXT,
-			verdict INTEGER NOT NULL,
-			comment TEXT,
-			rated_at INTEGER NOT NULL
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_retrieval_ratings_project ON retrieval_ratings(project_id, rated_at DESC)`,
 		// Dream-pass log: one row per non-skipped dream run, recording the
 		// counts the reasoner produced. Used by the Stats dashboard to show
 		// "how active is the dreamer" without needing to scan memory_events.
@@ -1268,12 +1256,12 @@ func sanitizeFTSQuery(input string) string {
 // without the bump the user can ask for k=5 style memories and get 2
 // back because 3 of the top-5 nearest were process memories.
 //
-// queryText is the human query the vector was embedded from, recorded on
-// the recall event for analytics (the vector itself is opaque). minSimilarity
-// (0–1) drops hits whose cosine similarity falls below the floor; 0 disables
-// the floor. Filtering happens over the top-k by distance, so the floor
-// trims weak matches rather than widening the search.
-func (s *Store) Search(ctx context.Context, projectID string, query []float32, queryText string, k int, categories []MemoryCategory, minSimilarity float64) ([]Memory, error) {
+// searchCandidates is the shared core: it runs the vec0 KNN query and returns
+// the top-k memories for projectID ordered nearest-first, each with Score (raw
+// L2 distance) and Similarity populated. No floor, no event recording — Search
+// layers the similarity floor + recall analytics on top; SearchPreview flags
+// candidates for the UI without recording anything.
+func (s *Store) searchCandidates(ctx context.Context, projectID string, query []float32, k int, categories []MemoryCategory) ([]Memory, error) {
 	if len(query) != s.dim {
 		return nil, fmt.Errorf("query dim %d != expected %d", len(query), s.dim)
 	}
@@ -1285,13 +1273,6 @@ func (s *Store) Search(ctx context.Context, projectID string, query []float32, q
 	blob, err := vec.SerializeFloat32(normalizeVec(query))
 	if err != nil {
 		return nil, err
-	}
-
-	// Translate the similarity floor into a max L2 distance once, up front,
-	// so the per-row check is a plain compare. maxDist < 0 means "no floor".
-	maxDist := -1.0
-	if minSimilarity > 0 {
-		maxDist = similarityToMaxDistance(minSimilarity)
 	}
 
 	// Validate + dedupe categories. Invalid entries are dropped silently
@@ -1349,7 +1330,7 @@ func (s *Store) Search(ctx context.Context, projectID string, query []float32, q
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Memory
+	var cands []Memory
 	for rows.Next() {
 		var (
 			m        Memory
@@ -1362,13 +1343,6 @@ func (s *Store) Search(ctx context.Context, projectID string, query []float32, q
 		if err := rows.Scan(&m.ID, &m.UUID, &m.ProjectID, &m.Content, &tagsJSON, &created, &updated, &category, &dist); err != nil {
 			return nil, err
 		}
-		// Drop sub-threshold hits. Rows arrive in ascending distance order,
-		// so once one exceeds maxDist every later row does too — but we
-		// `continue` rather than `break` to stay robust if that ordering
-		// assumption ever changes.
-		if maxDist >= 0 && dist > maxDist {
-			continue
-		}
 		_ = json.Unmarshal([]byte(tagsJSON), &m.Tags)
 		m.CreatedAt = time.Unix(created, 0)
 		m.UpdatedAt = time.Unix(updated, 0)
@@ -1377,23 +1351,76 @@ func (s *Store) Search(ctx context.Context, projectID string, query []float32, q
 		}
 		m.Score = dist
 		m.Similarity = distanceToSimilarity(dist)
-		m.Rank = len(out) + 1 // 1-based position among returned hits
-		out = append(out, m)
+		// Keep every candidate (rows are already nearest-first). Callers decide
+		// what to do with the floor.
+		cands = append(cands, m)
 	}
 	if err := rows.Err(); err != nil {
-		return out, err
+		return nil, err
 	}
-	for _, m := range out {
-		s.recordMemoryEvent(ctx, EventRecalled, m.ID, m.ProjectID,
-			map[string]any{
-				"via":        "vector",
-				"query":      queryText,
-				"distance":   m.Score,
-				"similarity": m.Similarity,
-				"rank":       m.Rank,
-			})
+	return cands, nil
+}
+
+// Search returns the memories to inject for a query: the top-k candidates
+// (see searchCandidates) filtered to those clearing minSimilarity (0 = no
+// floor), in rank order. It records the analytics behind the Retrievals view —
+// injected candidates as EventRecalled, dropped near-misses as EventConsidered
+// (kept out of the "recalled" stats). queryText is the human query the vector
+// was embedded from, stored on the events.
+func (s *Store) Search(ctx context.Context, projectID string, query []float32, queryText string, k int, categories []MemoryCategory, minSimilarity float64) ([]Memory, error) {
+	cands, err := s.searchCandidates(ctx, projectID, query, k, categories)
+	if err != nil {
+		return nil, err
+	}
+	maxDist := -1.0
+	if minSimilarity > 0 {
+		maxDist = similarityToMaxDistance(minSimilarity)
+	}
+	// One id per Search call so the Retrievals view can group the candidates
+	// considered for a single query (a second-granularity timestamp alone
+	// would merge two queries fired in the same second).
+	recallID := uuid.NewString()
+	out := make([]Memory, 0, len(cands))
+	for i, m := range cands {
+		injected := maxDist < 0 || m.Score <= maxDist
+		kind := EventConsidered
+		if injected {
+			m.Rank = len(out) + 1 // 1-based among injected — the agent-facing rank
+			out = append(out, m)
+			kind = EventRecalled
+		}
+		// Recorded `rank` is the candidate position (nearest-first) so the
+		// observability view orders injected + dropped together. Dropped
+		// candidates are logged as EventConsidered to stay out of the
+		// "recalled" stats counts.
+		s.recordMemoryEvent(ctx, kind, m.ID, m.ProjectID, map[string]any{
+			"via":        "vector",
+			"recall_id":  recallID,
+			"query":      queryText,
+			"distance":   m.Score,
+			"similarity": m.Similarity,
+			"rank":       i + 1,
+		})
 	}
 	return out, nil
+}
+
+// SearchPreview runs the same vector search as Search but returns ALL top-k
+// candidates (not just those above the floor), each with a 1-based Rank and an
+// Injected flag set per minSimilarity. It records NO events: it backs the
+// Memories-page search box, which is browsing — recording it would pollute the
+// recall analytics, the stats, and the Retrievals view.
+func (s *Store) SearchPreview(ctx context.Context, projectID string, query []float32, k int, categories []MemoryCategory, minSimilarity float64) ([]Memory, error) {
+	cands, err := s.searchCandidates(ctx, projectID, query, k, categories)
+	if err != nil {
+		return nil, err
+	}
+	for i := range cands {
+		cands[i].Rank = i + 1
+		injected := minSimilarity <= 0 || cands[i].Similarity >= minSimilarity
+		cands[i].Injected = &injected
+	}
+	return cands, nil
 }
 
 type scanner interface {
@@ -1445,6 +1472,11 @@ const (
 	EventUpdated  MemoryEventKind = "updated"
 	EventDeleted  MemoryEventKind = "deleted"
 	EventRecalled MemoryEventKind = "recalled"
+	// EventConsidered is a memory a vector search surfaced but dropped for
+	// falling below the similarity floor — a near-miss. Recorded only for the
+	// Retrievals observability view; deliberately NOT counted as a "recall"
+	// (it was never sent to the agent), so stats stay honest.
+	EventConsidered MemoryEventKind = "considered"
 )
 
 // recordMemoryEvent inserts a row into memory_events. Errors are swallowed -
@@ -1476,55 +1508,73 @@ func (s *Store) recordMemoryEvent(ctx context.Context, kind MemoryEventKind, mem
 // their zero value.
 type recallMeta struct {
 	Via        string  `json:"via"`
+	RecallID   string  `json:"recall_id"`
 	Query      string  `json:"query"`
 	Distance   float64 `json:"distance"`
 	Similarity float64 `json:"similarity"`
 	Rank       int     `json:"rank"`
 }
 
-// RetrievalEvent is one past recall joined to the memory it returned and any
-// developer verdict on it. Powers the "why was this retrieved + was it a
-// good match?" review surface. MemoryContent is empty when the memory has
-// since been deleted (the event outlives the row). Verdict is nil until the
-// developer rates it; +1 = good match, -1 = bad match.
-type RetrievalEvent struct {
-	EventID        int64          `json:"event_id"`
-	MemoryID       int64          `json:"memory_id"`
-	ProjectID      string         `json:"project_id"`
-	At             time.Time      `json:"at"`
-	Query          string         `json:"query"`
-	Similarity     float64        `json:"similarity"`
-	Rank           int            `json:"rank"`
-	MemoryContent  string         `json:"memory_content,omitempty"`
-	MemoryCategory MemoryCategory `json:"memory_category,omitempty"`
-	Verdict        *int           `json:"verdict,omitempty"`
-	Comment        string         `json:"comment,omitempty"`
+// RetrievalMemory is one memory that a single retrieve call returned to the
+// agent. Content is empty when the memory has since been deleted (the recall
+// event outlives the row).
+type RetrievalMemory struct {
+	MemoryID int64          `json:"memory_id"`
+	Content  string         `json:"content,omitempty"`
+	Category MemoryCategory `json:"category,omitempty"`
+	// Injected is true when this candidate cleared the similarity floor and
+	// was actually sent to the agent; false for a near-miss the floor dropped.
+	// No omitempty — the false case must serialise so the UI can mark it.
+	Injected   bool    `json:"injected"`
+	Similarity float64 `json:"similarity"`
+	Rank       int     `json:"rank"`
 }
 
-// ListRetrievals returns recent recall events for projectID (newest first),
-// each joined to the memory it returned and the developer's verdict if one
-// exists. An empty projectID spans all projects. The memory join is a LEFT
-// join so a recall of a since-deleted memory still appears (with empty
-// content) rather than vanishing from the audit trail.
-func (s *Store) ListRetrievals(ctx context.Context, projectID string, limit int) ([]RetrievalEvent, error) {
+// RetrievalGroup is one retrieve call: the query the agent issued and the
+// memories that cleared the threshold and were sent back, in rank order.
+// This is the observability unit — "what did the agent get for this prompt?".
+type RetrievalGroup struct {
+	RecallID  string            `json:"recall_id"`
+	ProjectID string            `json:"project_id"`
+	Query     string            `json:"query"`
+	At        time.Time         `json:"at"`
+	Memories  []RetrievalMemory `json:"memories"`
+}
+
+// ListRetrievals returns recent vector retrievals for projectID, grouped by
+// the retrieve call that produced them (newest group first), up to `limit`
+// groups. Each group is one query and the candidates it surfaced — both the
+// memories injected into the agent (kind=recalled) and the near-misses the
+// similarity floor dropped (kind=considered), so the view can show injected
+// vs dropped. FTS/text searches (the Memories-page search box) are excluded.
+// The memory join is a LEFT join so a recall of a since-deleted memory still
+// appears (with empty content).
+func (s *Store) ListRetrievals(ctx context.Context, projectID string, limit int) ([]RetrievalGroup, error) {
 	if limit <= 0 {
 		limit = 100
 	}
+	// Over-fetch rows since `limit` counts groups, not rows; each group holds
+	// several memories. Cap so a huge event log can't blow up memory.
+	rowLimit := limit * 12
+	if rowLimit < 200 {
+		rowLimit = 200
+	}
+	if rowLimit > 4000 {
+		rowLimit = 4000
+	}
+
 	sqlText := `
-		SELECT e.id, e.memory_id, e.project_id, e.at, e.metadata_json,
-		       m.content, m.category,
-		       r.verdict, r.comment
+		SELECT e.kind, e.memory_id, e.at, e.metadata_json, m.content, m.category
 		FROM memory_events e
 		LEFT JOIN memories m ON m.id = e.memory_id
-		LEFT JOIN retrieval_ratings r ON r.event_id = e.id
-		WHERE e.kind = ?`
-	args := []any{string(EventRecalled)}
+		WHERE e.kind IN (?, ?)`
+	args := []any{string(EventRecalled), string(EventConsidered)}
 	if projectID != "" {
 		sqlText += ` AND e.project_id = ?`
 		args = append(args, projectID)
 	}
 	sqlText += ` ORDER BY e.at DESC, e.id DESC LIMIT ?`
-	args = append(args, limit)
+	args = append(args, rowLimit)
 
 	rows, err := s.db.QueryContext(ctx, sqlText, args...)
 	if err != nil {
@@ -1532,92 +1582,85 @@ func (s *Store) ListRetrievals(ctx context.Context, projectID string, limit int)
 	}
 	defer rows.Close()
 
-	var out []RetrievalEvent
+	var groups []RetrievalGroup
+	index := make(map[string]int) // group key -> position in groups
+
 	for rows.Next() {
 		var (
-			ev       RetrievalEvent
+			kind     string
 			at       int64
 			memID    sql.NullInt64
 			metaJSON sql.NullString
 			content  sql.NullString
 			category sql.NullString
-			verdict  sql.NullInt64
-			comment  sql.NullString
 		)
-		if err := rows.Scan(&ev.EventID, &memID, &ev.ProjectID, &at, &metaJSON,
-			&content, &category, &verdict, &comment); err != nil {
+		if err := rows.Scan(&kind, &memID, &at, &metaJSON, &content, &category); err != nil {
 			return nil, err
 		}
-		ev.At = time.Unix(at, 0)
-		if memID.Valid {
-			ev.MemoryID = memID.Int64
-		}
+		var meta recallMeta
 		if metaJSON.Valid {
-			var meta recallMeta
-			if json.Unmarshal([]byte(metaJSON.String), &meta) == nil {
-				ev.Query = meta.Query
-				ev.Similarity = meta.Similarity
-				ev.Rank = meta.Rank
-			}
+			_ = json.Unmarshal([]byte(metaJSON.String), &meta)
+		}
+		// Only vector recalls represent memories sent to the agent. Skip the
+		// local FTS searches that share the "recalled" event kind.
+		if meta.Via != "" && meta.Via != "vector" {
+			continue
+		}
+
+		// Group key: the per-call recall_id when present, else fall back to
+		// query + timestamp for events written before recall_id existed.
+		key := meta.RecallID
+		if key == "" {
+			key = meta.Query + "@" + strconv.FormatInt(at, 10)
+		}
+
+		mem := RetrievalMemory{
+			Similarity: meta.Similarity,
+			Rank:       meta.Rank,
+			// recalled = injected; considered = dropped near-miss. Legacy rows
+			// were all injected (the kind is "recalled").
+			Injected: kind == string(EventRecalled),
+		}
+		if memID.Valid {
+			mem.MemoryID = memID.Int64
 		}
 		if content.Valid {
-			ev.MemoryContent = content.String
+			mem.Content = content.String
 		}
 		if category.Valid {
-			ev.MemoryCategory = MemoryCategory(category.String)
+			mem.Category = MemoryCategory(category.String)
 		}
-		if verdict.Valid {
-			v := int(verdict.Int64)
-			ev.Verdict = &v
-		}
-		if comment.Valid {
-			ev.Comment = comment.String
-		}
-		out = append(out, ev)
-	}
-	return out, rows.Err()
-}
 
-// ErrNotRecallEvent is returned by RateRetrieval when eventID doesn't name a
-// recall event (wrong kind, or no such event) — there's nothing to rate.
-var ErrNotRecallEvent = errors.New("event is not a recall event")
-
-// RateRetrieval records (or updates) a developer verdict on a single recall.
-// verdict must be +1 (good match) or -1 (bad match). memory_id, project_id,
-// and the query are pulled from the recall event so a rating row is
-// self-contained even if the event is later pruned. Re-rating the same event
-// overwrites the prior verdict (UNIQUE(event_id) upsert).
-func (s *Store) RateRetrieval(ctx context.Context, eventID int64, verdict int, comment string) error {
-	if verdict != 1 && verdict != -1 {
-		return fmt.Errorf("verdict must be +1 or -1, got %d", verdict)
-	}
-	var (
-		memID    sql.NullInt64
-		project  string
-		metaJSON sql.NullString
-	)
-	err := s.db.QueryRowContext(ctx,
-		`SELECT memory_id, project_id, metadata_json FROM memory_events WHERE id = ? AND kind = ?`,
-		eventID, string(EventRecalled)).Scan(&memID, &project, &metaJSON)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ErrNotRecallEvent
-	}
-	if err != nil {
-		return err
-	}
-	var query string
-	if metaJSON.Valid {
-		var meta recallMeta
-		if json.Unmarshal([]byte(metaJSON.String), &meta) == nil {
-			query = meta.Query
+		if pos, ok := index[key]; ok {
+			groups[pos].Memories = append(groups[pos].Memories, mem)
+			continue
 		}
+		if len(groups) >= limit {
+			// New group beyond the cap. Rows are ordered by time, so any
+			// remaining rows belong to even older groups — safe to stop.
+			break
+		}
+		index[key] = len(groups)
+		groups = append(groups, RetrievalGroup{
+			RecallID:  meta.RecallID,
+			ProjectID: projectID,
+			Query:     meta.Query,
+			At:        time.Unix(at, 0),
+			Memories:  []RetrievalMemory{mem},
+		})
 	}
-	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO retrieval_ratings(event_id, memory_id, project_id, query, verdict, comment, rated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(event_id) DO UPDATE SET verdict = excluded.verdict, comment = excluded.comment, rated_at = excluded.rated_at`,
-		eventID, memID, project, query, verdict, comment, time.Now().Unix())
-	return err
+	if err := rows.Err(); err != nil {
+		return groups, err
+	}
+
+	// Rows arrived newest-first (descending id within a group), so each
+	// group's memories are reversed relative to rank — sort ascending.
+	for i := range groups {
+		sort.SliceStable(groups[i].Memories, func(a, b int) bool {
+			return groups[i].Memories[a].Rank < groups[i].Memories[b].Rank
+		})
+	}
+	return groups, nil
 }
 
 // SessionMessage is one stored conversation turn awaiting dreaming.

@@ -12,7 +12,7 @@ import (
 
 // GetMemoriesHandler has two modes:
 //   - empty `q` → List
-//   - non-empty `q` → SearchText
+//   - non-empty `q` → SearchSemantic (vector search)
 //
 // Both modes share the {items: [...]} response envelope.
 func TestGetMemoriesHandler(t *testing.T) {
@@ -41,7 +41,7 @@ func TestGetMemoriesHandler(t *testing.T) {
 			expectLimit:    100,
 		},
 		{
-			name:           "q present → SearchText",
+			name:           "q present → SearchSemantic",
 			queryString:    "project_id=p1&q=foo",
 			searchOut:      []store.Memory{{ID: 2, Content: "foo result"}},
 			expectedStatus: http.StatusOK,
@@ -90,7 +90,7 @@ func TestGetMemoriesHandler(t *testing.T) {
 			if tc.expectMode == "search" {
 				assert.Equal(tc.expectQuery, reader.gotQuery, "search query forwarded")
 			} else {
-				assert.Empty(reader.gotQuery, "list mode should not call SearchText")
+				assert.Empty(reader.gotQuery, "list mode should not run a search")
 			}
 		})
 	}

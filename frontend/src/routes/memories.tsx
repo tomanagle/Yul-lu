@@ -50,13 +50,16 @@ export function MemoriesPage() {
     null,
   );
 
-  // The backend handles search via SQLite FTS5 (BM25-ranked, free).
-  // Passing a non-empty filter switches useMemories from List to Search.
+  // A non-empty filter switches useMemories from List to semantic vector
+  // search — the same retrieval the agent uses — so a natural-language query
+  // (e.g. one copied from the Retrievals page) matches, and results come back
+  // ranked with a similarity %, rank, and an "injected" flag.
   const memoriesQuery = useMemories(project, filter);
   const deleteMemory = useDeleteMemory(project);
   const updateMemory = useUpdateMemory(project);
 
   const results = memoriesQuery.data ?? [];
+  const searching = filter.trim().length > 0;
 
   // Pre-bucket results by category once per render. Memo'd to avoid
   // re-shuffling on every keystroke when the user is just typing in the
@@ -85,12 +88,20 @@ export function MemoriesPage() {
         onRefresh={() => memoriesQuery.refetch()}
       />
 
-      <CategoryFilterPills active={activeCategory} onChange={setActiveCategory} counts={grouped} />
+      {/* Category pills are a browse affordance — hidden in search mode,
+          where results come back ranked by relevance, not by category. */}
+      {!searching && (
+        <CategoryFilterPills
+          active={activeCategory}
+          onChange={setActiveCategory}
+          counts={grouped}
+        />
+      )}
 
-      <div className="flex items-center justify-between  text-muted-foreground">
+      <div className="flex items-center justify-between text-sm text-muted-foreground">
         <span>
-          {filter
-            ? `${showingCount} ${showingCount === 1 ? "match" : "matches"} for “${filter}”`
+          {searching
+            ? `${showingCount} ${showingCount === 1 ? "match" : "matches"} for “${filter}” · ranked by similarity`
             : `${showingCount} ${showingCount === 1 ? "memory" : "memories"}`}
         </span>
         <span>
@@ -102,43 +113,77 @@ export function MemoriesPage() {
         </span>
       </div>
 
-      {memoriesQuery.isLoading && <p className=" text-muted-foreground">Loading…</p>}
+      {memoriesQuery.isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
       {memoriesQuery.error && (
         <Card className="border-destructive/40 bg-destructive/10">
-          <CardContent className="p-4  text-destructive">{String(memoriesQuery.error)}</CardContent>
+          <CardContent className="p-4 text-sm text-destructive">
+            {String(memoriesQuery.error)}
+          </CardContent>
         </Card>
       )}
-      {!memoriesQuery.isLoading && showingCount === 0 && !filter && <EmptyState />}
-      {!memoriesQuery.isLoading && showingCount === 0 && filter && (
-        <p className="py-8 text-center  text-muted-foreground">No memories match “{filter}”.</p>
-      )}
-      {!memoriesQuery.isLoading && showingCount > 0 && visibleSections.length === 0 && (
-        <p className="py-8 text-center  text-muted-foreground">No memories in this category.</p>
+      {!memoriesQuery.isLoading && showingCount === 0 && !searching && <EmptyState />}
+      {!memoriesQuery.isLoading && showingCount === 0 && searching && (
+        <p className="py-8 text-center text-sm text-muted-foreground">
+          Nothing to search — this project has no memories yet.
+        </p>
       )}
 
-      <div className="space-y-6">
-        {visibleSections.map((category) => (
-          <section key={category} className="space-y-3">
-            <CategorySectionHeader category={category} count={grouped[category]?.length ?? 0} />
-            <ul className="space-y-3">
-              {grouped[category]!.map((m) => (
-                <li key={m.id}>
-                  <MemoryCard
-                    memory={m}
-                    isSaving={updateMemory.isPending && updateMemory.variables?.id === m.id}
-                    onSave={(content, tags) =>
-                      updateMemory.mutateAsync({ id: m.id, content, tags })
-                    }
-                    onDelete={() => {
-                      if (confirm("Delete this memory?")) deleteMemory.mutate(m.id);
-                    }}
-                  />
-                </li>
-              ))}
-            </ul>
-          </section>
-        ))}
-      </div>
+      {searching ? (
+        // Flat, relevance-ranked list. Each card shows its match % + rank and
+        // a green/red dot for whether it would be sent to the agent. While the
+        // next search loads we keep these results and just dim them (see
+        // placeholderData in useMemories) instead of blanking to a spinner.
+        <ul
+          className={cn(
+            "space-y-3 transition-opacity duration-150",
+            memoriesQuery.isPlaceholderData && "opacity-60",
+          )}
+        >
+          {results.map((m) => (
+            <li key={m.id}>
+              <MemoryCard
+                memory={m}
+                isSaving={updateMemory.isPending && updateMemory.variables?.id === m.id}
+                onSave={(content, tags) => updateMemory.mutateAsync({ id: m.id, content, tags })}
+                onDelete={() => {
+                  if (confirm("Delete this memory?")) deleteMemory.mutate(m.id);
+                }}
+              />
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <>
+          {!memoriesQuery.isLoading && showingCount > 0 && visibleSections.length === 0 && (
+            <p className="py-8 text-center text-sm text-muted-foreground">
+              No memories in this category.
+            </p>
+          )}
+          <div className="space-y-6">
+            {visibleSections.map((category) => (
+              <section key={category} className="space-y-3">
+                <CategorySectionHeader category={category} count={grouped[category]?.length ?? 0} />
+                <ul className="space-y-3">
+                  {grouped[category]!.map((m) => (
+                    <li key={m.id}>
+                      <MemoryCard
+                        memory={m}
+                        isSaving={updateMemory.isPending && updateMemory.variables?.id === m.id}
+                        onSave={(content, tags) =>
+                          updateMemory.mutateAsync({ id: m.id, content, tags })
+                        }
+                        onDelete={() => {
+                          if (confirm("Delete this memory?")) deleteMemory.mutate(m.id);
+                        }}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -253,7 +298,7 @@ function Toolbar({
         <Input
           value={filter}
           onChange={(e) => onFilterChange(e.target.value)}
-          placeholder="Filter by content or tag…"
+          placeholder="Search memories by meaning…"
           className="pl-9"
         />
       </div>
@@ -261,6 +306,47 @@ function Toolbar({
         <RefreshCw className={loading ? "animate-spin" : ""} />
         Refresh
       </Button>
+    </div>
+  );
+}
+
+// RetrievalHeader shows a semantic-search result's match % + rank and a
+// green/red dot for whether it cleared the similarity floor (i.e. would be
+// sent to the agent). Native title tooltips explain each.
+function RetrievalHeader({
+  similarity,
+  rank,
+  injected,
+}: {
+  similarity: number;
+  rank?: number;
+  injected?: boolean;
+}) {
+  const pct = Math.round(similarity * 100);
+  const wouldInject = injected !== false; // undefined → treat as injected
+  const title = wouldInject
+    ? `Would be sent to the agent — ${pct}% match (rank #${rank ?? "?"}) clears the threshold`
+    : `Would NOT be sent — ${pct}% is below the similarity threshold`;
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span
+        title={title}
+        aria-label={wouldInject ? "Would be sent to the agent" : "Below the threshold"}
+        className={cn(
+          "h-2.5 w-2.5 shrink-0 cursor-help rounded-full ring-2",
+          wouldInject ? "bg-emerald-500 ring-emerald-500/20" : "bg-rose-500 ring-rose-500/20",
+        )}
+      />
+      <span
+        className={cn(
+          "yullu-tabular font-semibold",
+          wouldInject ? (pct >= 80 ? "text-primary" : "text-foreground") : "text-muted-foreground",
+        )}
+      >
+        {pct}%
+      </span>
+      <span className="yullu-tabular text-muted-foreground">#{rank ?? "?"}</span>
+      {!wouldInject && <span className="text-rose-500/90">below threshold</span>}
     </div>
   );
 }
@@ -274,6 +360,10 @@ type MemoryShape = {
   created_at: string;
   updated_at: string;
   category?: MemoryCategory;
+  // Present only on semantic-search results.
+  similarity?: number;
+  rank?: number;
+  injected?: boolean;
 };
 
 function MemoryCard({
@@ -307,9 +397,18 @@ function MemoryCard({
   const created = relativeTime(memory.created_at);
   const edited = memory.created_at !== memory.updated_at;
 
+  const isResult = memory.similarity !== undefined;
+
   return (
     <Card className="group transition-colors hover:border-border/80">
       <CardContent className="space-y-3 p-4">
+        {isResult && (
+          <RetrievalHeader
+            similarity={memory.similarity!}
+            rank={memory.rank}
+            injected={memory.injected}
+          />
+        )}
         <div className="flex items-start gap-3">
           <p className="flex-1 whitespace-pre-wrap  leading-relaxed">{memory.content}</p>
           <div className="flex shrink-0 gap-1 opacity-0 transition-opacity group-hover:opacity-100">

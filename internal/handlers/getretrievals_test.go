@@ -16,7 +16,7 @@ func TestGetRetrievalsHandler(t *testing.T) {
 
 		queryString string
 
-		listOut []store.RetrievalEvent
+		listOut []store.RetrievalGroup
 		listErr error
 
 		expectedStatus   int
@@ -25,9 +25,14 @@ func TestGetRetrievalsHandler(t *testing.T) {
 		expectGotLimit   int
 	}{
 		{
-			name:             "returns retrievals for the project",
-			queryString:      "project_id=p1&limit=50",
-			listOut:          []store.RetrievalEvent{{EventID: 1, Query: "how does auth work", MemoryContent: "auth note"}},
+			name:        "returns grouped retrievals for the project",
+			queryString: "project_id=p1&limit=50",
+			listOut: []store.RetrievalGroup{
+				{
+					Query:    "how does auth work",
+					Memories: []store.RetrievalMemory{{MemoryID: 1, Content: "auth note", Rank: 1}},
+				},
+			},
 			expectedStatus:   http.StatusOK,
 			expectContains:   `"how does auth work"`,
 			expectGotProject: "p1",

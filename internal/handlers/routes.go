@@ -122,11 +122,8 @@ func Register(mux *http.ServeMux, p RegisterParams) {
 	mux.Handle("POST /api/memories/recall",
 		NewPostRecallHandler(PostRecallHandlerParams{Recall: p.Recall}))
 
-	// Retrieval analytics: the recall audit trail ("why was this memory
-	// surfaced for that query?") and per-recall relevance verdicts. Keyed
-	// to a recall event, not a memory — see RetrievalAnalytics.
+	// Retrieval analytics: the recall audit trail — what memories were sent
+	// to the agent for each query, grouped by query. Read-only observability.
 	mux.Handle("GET /api/retrievals",
 		NewGetRetrievalsHandler(GetRetrievalsHandlerParams{Retrievals: p.Retrievals}))
-	mux.Handle("POST /api/retrievals/{eventID}/rate",
-		NewPostRateRetrievalHandler(PostRateRetrievalHandlerParams{Retrievals: p.Retrievals}))
 }

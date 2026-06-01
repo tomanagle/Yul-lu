@@ -140,9 +140,12 @@ export const MemorySchema = z.object({
   updated_at: z.string(),
   score: z.number().optional(),
   // similarity is the cosine match (0–1) derived from score, present only on
-  // search results. rank is the 1-based position in that result set.
+  // search results. rank is the 1-based position in that result set. injected
+  // (semantic search only) is true if the memory cleared the similarity floor
+  // and would be sent to the agent; false for a near-miss.
   similarity: z.number().optional(),
   rank: z.number().optional(),
+  injected: z.boolean().optional(),
   // rating is the user-supplied quality score (6..10). Memories rated ≤ 5
   // are moved out of the memories table entirely, so a present rating
   // here is always ≥ 6. Absent means un-rated (lives in the Review queue).
@@ -299,23 +302,31 @@ export type ProjectOverridesView = z.infer<typeof ProjectOverridesViewSchema>;
 
 // ----- Retrieval analytics -------------------------------------------------
 
-// One past recall: the memory that surfaced, the query that pulled it, how
-// close the match was (similarity/rank), and the developer's verdict if any.
-// verdict is +1 (good match) / -1 (bad match); absent means unrated.
-export const RetrievalEventSchema = z.object({
-  event_id: z.number(),
+// One memory a retrieve call returned to the agent. memory_content is absent
+// when the memory has since been deleted.
+export const RetrievalMemorySchema = z.object({
   memory_id: z.number(),
-  project_id: z.string(),
-  at: z.string(),
-  query: z.string().optional(),
+  content: z.string().optional(),
+  category: MemoryCategorySchema.optional(),
+  // injected = cleared the similarity floor and was sent to the agent;
+  // false = a near-miss the floor dropped. Optional for forward-safety;
+  // the UI treats a missing value as injected.
+  injected: z.boolean().optional(),
   similarity: z.number().optional(),
   rank: z.number().optional(),
-  memory_content: z.string().optional(),
-  memory_category: MemoryCategorySchema.optional(),
-  verdict: z.number().optional(),
-  comment: z.string().optional(),
 });
-export type RetrievalEvent = z.infer<typeof RetrievalEventSchema>;
+export type RetrievalMemory = z.infer<typeof RetrievalMemorySchema>;
+
+// One retrieve call: the query the agent issued and the memories that cleared
+// the similarity threshold and were sent back, in rank order.
+export const RetrievalGroupSchema = z.object({
+  recall_id: z.string(),
+  project_id: z.string(),
+  query: z.string(),
+  at: z.string(),
+  memories: z.array(RetrievalMemorySchema),
+});
+export type RetrievalGroup = z.infer<typeof RetrievalGroupSchema>;
 
 // ----- List envelopes ------------------------------------------------------
 
@@ -330,7 +341,7 @@ export const DailyMemoryEventsListSchema = listOf(DailyMemoryEventsSchema);
 export const DailyUsageListSchema = listOf(DailyUsageSchema);
 export const UsageBucketListSchema = listOf(UsageBucketSchema);
 export const DreamPassesListSchema = listOf(DreamPassSchema);
-export const RetrievalsListSchema = listOf(RetrievalEventSchema);
+export const RetrievalsListSchema = listOf(RetrievalGroupSchema);
 
 // ----- Buffered sessions ---------------------------------------------------
 

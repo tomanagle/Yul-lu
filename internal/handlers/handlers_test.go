@@ -99,7 +99,7 @@ func (f *fakeMemoryReader) List(_ context.Context, projectID string, limit int) 
 	return f.listOut, f.err
 }
 
-func (f *fakeMemoryReader) SearchText(_ context.Context, projectID, query string, limit int) ([]store.Memory, error) {
+func (f *fakeMemoryReader) SearchSemantic(_ context.Context, projectID, query string, limit int) ([]store.Memory, error) {
 	f.gotProjectID = projectID
 	f.gotQuery = query
 	f.gotLimit = limit
@@ -155,32 +155,21 @@ func (f *fakeMemoryRecaller) RecallMemories(
 	return f.recallOut, f.recallErr
 }
 
-// fakeRetrievalAnalytics satisfies RetrievalAnalytics. listOut/listErr
-// drive ListRetrievals; rateErr drives RateRetrieval. Captured inputs let
-// tests assert the handler parsed the path + body correctly.
+// fakeRetrievalAnalytics satisfies RetrievalAnalytics. listOut/listErr drive
+// ListRetrievals; captured inputs let tests assert the handler parsed the
+// query string correctly.
 type fakeRetrievalAnalytics struct {
-	listOut []store.RetrievalEvent
+	listOut []store.RetrievalGroup
 	listErr error
-	rateErr error
 
 	gotListProjectID string
 	gotListLimit     int
-	gotRateEventID   int64
-	gotRateVerdict   int
-	gotRateComment   string
 }
 
-func (f *fakeRetrievalAnalytics) ListRetrievals(_ context.Context, projectID string, limit int) ([]store.RetrievalEvent, error) {
+func (f *fakeRetrievalAnalytics) ListRetrievals(_ context.Context, projectID string, limit int) ([]store.RetrievalGroup, error) {
 	f.gotListProjectID = projectID
 	f.gotListLimit = limit
 	return f.listOut, f.listErr
-}
-
-func (f *fakeRetrievalAnalytics) RateRetrieval(_ context.Context, eventID int64, verdict int, comment string) error {
-	f.gotRateEventID = eventID
-	f.gotRateVerdict = verdict
-	f.gotRateComment = comment
-	return f.rateErr
 }
 
 // fakeDreamer satisfies Dreamer. dreamOut + dreamErr drive Dream; the

@@ -132,22 +132,15 @@ export const RateMemory = (id: number, rating: number, comment: string) =>
     body: JSON.stringify({ rating, comment }),
   });
 
-// Retrieval analytics: the recall audit trail + per-recall relevance
-// verdicts. RateRetrieval keys off the recall event id (not the memory);
-// verdict is +1 (good match) / -1 (bad match). The response is a lightweight
-// echo, so callers refetch the list on success.
+// Retrieval analytics: the recall audit trail — recent retrieve calls grouped
+// by query, each with the memories that were sent to the agent (limit counts
+// groups, not memories). Read-only observability.
 export const GetRetrievals = (projectID: string, limit = 100) => {
   const params = new URLSearchParams();
   if (projectID) params.set("project_id", projectID);
   if (limit) params.set("limit", String(limit));
   return requestList(RetrievalsListSchema, `/api/retrievals?${params}`);
 };
-
-export const RateRetrieval = (eventID: number, verdict: 1 | -1, comment: string) =>
-  rawRequest(`/api/retrievals/${eventID}/rate`, {
-    method: "POST",
-    body: JSON.stringify({ verdict, comment }),
-  });
 
 export const GetSessionStats = (projectID: string) => {
   const params = new URLSearchParams();

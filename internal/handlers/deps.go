@@ -30,11 +30,14 @@ type ConfigService interface {
 	SaveConfig(v ConfigView) (Status, error)
 }
 
-// MemoryReader is plain read access to stored memories. Satisfied directly
-// by *store.Store.
+// MemoryReader is read access to stored memories for the Memories page.
+// SearchSemantic runs the same vector search the agent uses (so a query
+// copied from the Retrievals page matches), returning ranked candidates each
+// flagged whether it would have been injected. Empty query → newest-first
+// list. Lives on App because the search needs the embedder.
 type MemoryReader interface {
 	List(ctx context.Context, projectID string, limit int) ([]store.Memory, error)
-	SearchText(ctx context.Context, projectID, query string, limit int) ([]store.Memory, error)
+	SearchSemantic(ctx context.Context, projectID, query string, limit int) ([]store.Memory, error)
 }
 
 // MemoryRecaller embeds a natural-language query and runs the same
@@ -63,14 +66,12 @@ type MemoryRater interface {
 	RateMemory(ctx context.Context, id int64, rating int, comment string) (*store.Memory, error)
 }
 
-// RetrievalAnalytics exposes the recall audit trail and the per-recall
-// relevance verdicts. ListRetrievals returns recent recalls joined to the
-// memory each returned (newest first); RateRetrieval records a +1/-1
-// verdict on one recall. Distinct from MemoryRater — that rates a memory's
-// intrinsic quality, this rates whether a *retrieval* was a good match.
+// RetrievalAnalytics exposes the recall audit trail: which memories were sent
+// to the agent, grouped by the query that pulled them, newest group first.
+// Pure observability — what crossed the similarity threshold and at what
+// rank — used to sanity-check and tune retrieval.
 type RetrievalAnalytics interface {
-	ListRetrievals(ctx context.Context, projectID string, limit int) ([]store.RetrievalEvent, error)
-	RateRetrieval(ctx context.Context, eventID int64, verdict int, comment string) error
+	ListRetrievals(ctx context.Context, projectID string, limit int) ([]store.RetrievalGroup, error)
 }
 
 // ProjectLister enumerates distinct project_ids known to the store.
